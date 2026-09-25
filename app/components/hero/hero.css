@@ -1,0 +1,80 @@
+.home-page:has(.fee-hero) { background:#030205; }
+.home-page:has(.fee-hero) > .app-header { position:absolute;top:20px;left:50%;transform:translateX(-50%);width:min(1180px,calc(100% - 80px));height:60px;margin:0;border:1px solid #3c2c4e;border-radius:40px;background:rgba(8,5,13,.76); }
+.home-page:has(.fee-hero) .header-inner { width:calc(100% - 48px);gap:20px; }
+.home-page:has(.fee-hero) .desktop-nav { gap:28px; }
+.home-page:has(.fee-hero) .desktop-nav a { height:38px;padding:0 12px;font-size:12px; }
+.home-page:has(.fee-hero) .desktop-nav a.active { background:radial-gradient(ellipse at center,#352044,#120b1a 80%);border-radius:30px;text-shadow:0 0 12px #b079ff; }
+.home-page:has(.fee-hero) .desktop-nav a::after { display:none; }
+.home-page:has(.fee-hero) .header-actions > .network-pill { display:none; }
+.home-page:has(.fee-hero) .header-wallet { border-radius:30px;font-size:10px; }
+.fee-hero { position:relative;height:300svh;min-height:2200px;background:#030205; }
+.fee-hero::after { content:"";position:absolute;z-index:2;left:0;right:0;bottom:-1px;height:180px;pointer-events:none;background:linear-gradient(to bottom,transparent,#07030c 92%); }
+.story-origin { background:radial-gradient(ellipse 65% 28% at 72% 0%,rgba(123,59,219,.2),transparent 72%),linear-gradient(to bottom,#07030c 0%,#050307 36%); }
+.story-origin::before { content:"";position:absolute;pointer-events:none;left:50%;top:-150px;width:940px;height:300px;transform:translateX(-50%) perspective(700px) rotateX(68deg);border:1px solid rgba(170,102,255,.18);border-radius:50%;background:repeating-radial-gradient(ellipse at center,transparent 0 28px,rgba(170,102,255,.09) 29px 30px);box-shadow:0 0 60px rgba(132,58,237,.12); }
+.fee-viewport { position:sticky;top:0;height:100svh;min-height:730px;overflow:hidden;isolation:isolate;--journey-exit:0; }
+.fee-atmosphere { position:absolute;inset:0;z-index:-1;background:radial-gradient(ellipse at 73% 40%,#32134d55,transparent 40%),radial-gradient(ellipse at 40% 85%,#5d259a29,transparent 36%),#030205; }
+.fee-atmosphere::before { content:"";position:absolute;left:-15%;right:-20%;height:200px;bottom:100px;border:1px solid #9b55ed36;border-radius:50%;transform:rotate(-12deg);box-shadow:0 0 60px #7938c425,inset 0 0 30px #ad72f81a; }
+.fee-atmosphere::after { content:"";position:absolute;width:800px;height:420px;right:-150px;bottom:-300px;border:1px solid #9a69e6;border-radius:50%;box-shadow:0 -9px 50px #914fff5c,inset 0 10px 50px #9655ff55;background:repeating-radial-gradient(ellipse at center,transparent 0 26px,#9a5af520 27px 28px),repeating-linear-gradient(80deg,transparent 0 45px,#b784ff20 46px 47px);transform:rotate(-12deg); }
+.fee-intro { position:absolute;z-index:3;top:clamp(125px,17vh,180px);left:max(5.5%,calc((100% - 1370px)/2));max-width:630px;pointer-events:none;opacity:calc(1 - var(--journey-exit));transform:translateY(calc(var(--journey-exit) * -50px)); }
+.fee-kicker { display:flex;align-items:center;gap:14px;color:#b779ff;font-family:monospace;font-size:10px;letter-spacing:.3em; }
+.fee-kicker i { width:1px;height:11px;background:#8350b5; }
+.fee-intro h1 { font-size:clamp(48px,4.75vw,76px);line-height:1.01;letter-spacing:-.065em;text-transform:uppercase;margin:18px 0 14px;font-weight:700; }
+.fee-intro h1 span { color:#b16ef4;background:linear-gradient(110deg,#9849ec,#c28af6);background-clip:text;-webkit-text-fill-color:transparent; }
+.fee-intro > p { font-size:clamp(14px,1.3vw,18px);line-height:1.5;color:#bdb0d2;margin:0;max-width:500px; }
+.fee-actions { display:flex;gap:15px;margin-top:26px;pointer-events:auto;width:max-content; }
+.fee-actions .button { border-radius:4px;text-transform:none;font-weight:500;font-size:13px;letter-spacing:0;min-height:50px;padding-inline:28px; }
+.fee-actions .button-outline { color:#debcff; }
+.fee-steps { display:flex;gap:28px;margin-top:34px; }
+.fee-steps > span { display:flex;align-items:center;gap:12px; }
+.fee-steps > span > svg { width:36px;height:36px;padding:9px;border:1px solid #8852bd;border-radius:50%;color:#b778fa; }
+.fee-steps > span > span { display:grid;gap:4px;color:#9686a9;font-size:11px; }
+.fee-steps b { font-weight:500;text-transform:uppercase;font-size:11px;color:#cda5fd;letter-spacing:.04em; }
+.fee-machine { position:absolute;inset:7% 0 12%;z-index:2;opacity:calc(1 - var(--journey-exit) * .85); }
+.fee-canvas,.fee-static { position:absolute;inset:0; }
+.fee-canvas canvas { display:block;width:100%;height:100%;touch-action:pan-y; }
+.fee-static { display:grid;place-items:center;left:31%; }
+.fee-static svg { width:100%;height:100%;filter:drop-shadow(0 0 18px #8b31e950); }
+.scene-ready .fee-static { display:none; }
+.fee-core-label,.fee-input-label,.fee-destination { position:absolute;transform:translate(-50%,-50%); }
+.fee-core-label { left:64%;top:50%;display:grid;justify-items:center;gap:1px;color:#f3e8ff;pointer-events:none; }
+.fee-core-logo { width:122px;height:auto;filter:drop-shadow(0 0 10px rgba(173,108,255,.48)); }
+.fee-core-label small { font-size:7px;letter-spacing:.2em;color:#a883d1; }
+.fee-input-label { left:36%;top:55%;text-transform:uppercase;font-size:10px;letter-spacing:.2em;color:#d4b6ef;pointer-events:none;text-shadow:0 0 15px #9e4df4; }
+.fee-destination { width:160px;min-height:65px;border:0;background:transparent;color:#fbf6ff;display:flex;align-items:center;justify-content:center;gap:18px;cursor:pointer;opacity:var(--route-dim,1);text-align:left;border-radius:12px;transition:box-shadow .25s,opacity .25s; }
+.fee-destination > svg { color:#b764ff;width:23px;height:23px;filter:drop-shadow(0 0 9px #a24fff); }
+.fee-destination > span:not(.fee-allocation-note) { display:grid;gap:3px; }
+.fee-destination small { text-transform:uppercase;font-size:9px;letter-spacing:.06em; }
+.fee-destination strong { font-size:24px;font-weight:500;text-shadow:0 0 calc(3px + var(--arrival,0) * 22px) #c794ff; }
+.fee-destination.is-inspected { box-shadow:0 0 22px #8d3ced55;background:#763ab21a; }
+.fee-allocation-note { position:absolute;bottom:-19px;left:50%;transform:translateX(-50%);white-space:nowrap;background:#14091feb;color:#d0a8fa;padding:5px 8px;border:1px solid #8251ab55;border-radius:5px;font-size:9px;opacity:0;pointer-events:none; }
+.fee-destination.is-inspected .fee-allocation-note { opacity:1; }
+.scene-fallback .fee-destination { left:88%!important; }
+.scene-fallback .fee-destination-0 { top:25%!important; }.scene-fallback .fee-destination-1 { top:42%!important; }.scene-fallback .fee-destination-2 { top:59%!important; }.scene-fallback .fee-destination-3 { top:76%!important; }
+.fee-footer { position:absolute;left:5.5%;right:5.5%;bottom:7%;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:35px;opacity:calc(1 - var(--journey-exit)); }
+.fee-facts { display:flex;gap:clamp(24px,4vw,60px); }
+.fee-facts > span { display:grid;gap:6px;font-size:11px;color:#9989ac; }
+.fee-facts strong { font-size:20px;color:#ece3fa;letter-spacing:-.04em; }
+.fee-scroll { display:grid;justify-items:center;gap:12px;font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#ba82fa; }
+.fee-mouse { width:23px;height:38px;border:1px solid #a35afa;border-radius:20px;display:grid;justify-items:center;padding-top:8px; }
+.fee-mouse i { width:3px;height:6px;background:#c183ff;border-radius:3px;box-shadow:0 0 10px #ad5aff; }
+.fee-journey-status { width:210px;display:grid;gap:15px;color:#ab80d1;font-size:9px;letter-spacing:.12em;text-transform:uppercase; }
+.fee-journey-status > div { height:2px;background:#51317466; }.fee-journey-status > div > span { display:block;height:100%;background:#b76eff;transform:scaleX(0);transform-origin:left;box-shadow:0 0 12px #ae50ff; }
+@media (max-width:1100px) and (min-width:701px) {
+  .fee-intro { top:140px;max-width:530px; }.fee-intro h1 { font-size:52px; }.fee-steps { gap:16px; }.fee-machine { inset:22% 0 7%; }.fee-destination { width:135px;gap:10px; }.fee-destination strong { font-size:21px; }.fee-core-logo { width:98px; }.fee-footer { bottom:4%; }.fee-journey-status { display:none; }
+  .home-page:has(.fee-hero) > .app-header { width:calc(100% - 40px); }.home-page:has(.fee-hero) .desktop-nav { gap:5px; }
+}
+@media (max-width:700px) {
+  .home-page:has(.fee-hero) > .app-header { top:12px;width:calc(100% - 28px);height:54px; }
+  .home-page:has(.fee-hero) .header-inner { width:calc(100% - 28px); }.home-page:has(.fee-hero) .mobile-menu-button { border:0;background:none; }
+  .home-page:has(.fee-hero) .mobile-nav { position:absolute;top:65px;left:-14px;right:-14px;height:calc(100svh - 78px);min-height:0; }
+  .fee-hero { min-height:0;height:280svh; }.fee-viewport { min-height:740px;height:100svh; }
+  .fee-intro { top:104px;left:6%;right:6%;max-width:none; }.fee-kicker { font-size:8px;letter-spacing:.24em; }.fee-intro h1 { font-size:clamp(34px,8.9vw,58px);margin:16px 0 12px;line-height:1.03; }.fee-intro > p { font-size:13px;max-width:330px; }.fee-desktop-break { display:none; }
+  .fee-actions { margin-top:18px;gap:10px; }.fee-actions .button { padding-inline:20px;min-height:44px;font-size:11px; }
+  .fee-steps { display:none; }.fee-machine { inset:320px 0 85px; }.fee-canvas { inset:0; }
+  .fee-destination { width:105px;min-height:50px;gap:10px;border-radius:8px; }.fee-destination > svg { width:17px;height:17px; }.fee-destination small { font-size:7px; }.fee-destination strong { font-size:19px; }.fee-allocation-note { font-size:8px;bottom:-15px; }
+  .fee-core-label { gap:0; }.fee-core-logo { width:76px; }.fee-core-label small { font-size:5px; }.fee-input-label { font-size:7px;letter-spacing:.09em; }
+  .fee-footer { bottom:24px;left:6%;right:6%;gap:10px; }.fee-facts { gap:22px; }.fee-facts strong { font-size:14px; }.fee-facts > span { font-size:8px;gap:4px; }.fee-scroll { display:none; }.fee-journey-status { position:absolute;bottom:52px;left:0;right:0;width:auto;gap:8px;font-size:7px; }.fee-atmosphere::after { bottom:-340px;right:-460px; }
+  .fee-static { left:0; }.scene-fallback .fee-core-label { left:48%!important;top:50%!important; }.scene-fallback .fee-input-label { left:18%!important;top:48%!important; }.scene-fallback .fee-destination { left:86%!important;width:90px;gap:5px; }.scene-fallback .fee-destination strong { font-size:14px; }
+}
+@media (prefers-reduced-motion:reduce) { .fee-hero { height:100svh;min-height:740px; }.fee-viewport { position:relative; }.fee-scroll { display:none; } }
+html[data-motion="reduced"] .fee-hero { height:100svh;min-height:740px; }

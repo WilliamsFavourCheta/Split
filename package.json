@@ -6,21 +6,42 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "contracts:build": "node_modules/@foundry-rs/forge-win32-amd64/bin/forge.exe build",
+    "contracts:test": "node_modules/@foundry-rs/forge-win32-amd64/bin/forge.exe test"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.109.0",
+    "@tanstack/react-query": "^5.103.2",
     "next": "16.3.6",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "three": "^0.186.1",
+    "viem": "^2.56.9",
+    "wagmi": "^3.7.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/three": "^0.186.0",
+    "@uniswap/v4-core": "1.0.2",
     "eslint": "^9",
     "eslint-config-next": "16.3.6",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "optionalDependencies": {
+    "@foundry-rs/anvil-darwin-amd64": "1.7.1",
+    "@foundry-rs/anvil-darwin-arm64": "1.7.1",
+    "@foundry-rs/anvil-linux-amd64": "1.7.1",
+    "@foundry-rs/anvil-linux-arm64": "1.7.1",
+    "@foundry-rs/anvil-win32-amd64": "1.7.1",
+    "@foundry-rs/forge-darwin-amd64": "1.7.1",
+    "@foundry-rs/forge-darwin-arm64": "1.7.1",
+    "@foundry-rs/forge-linux-amd64": "1.7.1",
+    "@foundry-rs/forge-linux-arm64": "1.7.1",
+    "@foundry-rs/forge-win32-amd64": "1.7.1"
   }
 }
