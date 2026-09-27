@@ -28,11 +28,11 @@ export type SplitConfiguredEvent = ChainEvent & {
   type: "SplitConfigured";
   poolId: string;
   creatorAddress: string;
-  treasuryAddress: string;
+  projectTreasuryAddress: string;
   communityAddress: string;
   creatorBps: number;
   liquidityBps: number;
-  treasuryBps: number;
+  projectTreasuryBps: number;
   communityBps: number;
 };
 
@@ -49,10 +49,27 @@ export type FeesAllocatedEvent = ChainEvent & {
   poolId: string;
   currency: string;
   grossAmount: string;
+  protocolAllocation: string;
   creatorAllocation: string;
-  treasuryAllocation: string;
+  projectTreasuryAllocation: string;
   communityAllocation: string;
   liquidityAllocation: string;
+};
+
+export type ProtocolFeesClaimedEvent = ChainEvent & {
+  type: "ProtocolFeesClaimed";
+  poolId: string;
+  currency: string;
+  recipientAddress: string;
+  rawAmount: string;
+};
+
+export type LaunchProtocolFeeChargedEvent = ChainEvent & {
+  type: "LaunchProtocolFeeCharged";
+  poolId: string;
+  tokenAddress: string;
+  creatorAddress: string;
+  rawAmount: string;
 };
 
 export type FeesClaimedEvent = ChainEvent & {
@@ -76,6 +93,8 @@ export type SplitIndexerEvent =
   | FeesAccruedEvent
   | FeesAllocatedEvent
   | FeesClaimedEvent
+  | ProtocolFeesClaimedEvent
+  | LaunchProtocolFeeChargedEvent
   | LiquidityCreditedEvent;
 
 /** A source must only return blocks beneath its configured finality depth. */

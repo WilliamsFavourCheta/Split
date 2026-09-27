@@ -1,4 +1,4 @@
-/** Shared UI shapes; no launch or financial fixture data is shipped to product routes. */
+﻿/** Shared UI shapes; no launch or financial fixture data is shipped to product routes. */
 export const EXPLORER_URL = "https://robinhoodchain.blockscout.com";
 
 export type TokenStatus = "live" | "graduated" | "upcoming" | "failed";
@@ -25,7 +25,7 @@ export type Token = {
 };
 
 export type Allocation = {
-  key: "creator" | "liquidity" | "treasury" | "community";
+  key: "creator" | "liquidity" | "projectTreasury" | "community";
   label: string;
   value: number;
   color: string;
@@ -37,7 +37,7 @@ export type Allocation = {
 export const DEFAULT_SPLIT: Allocation[] = [
   { key: "creator", label: "Creator", value: 40, color: "#9c6cff", type: "Project owner" },
   { key: "liquidity", label: "Liquidity", value: 30, color: "#8150ed", type: "SPLIT Liquidity Vault" },
-  { key: "treasury", label: "Treasury", value: 20, color: "#6135bd", type: "Protocol treasury" },
+  { key: "projectTreasury", label: "Project Treasury", value: 20, color: "#6135bd", type: "Project destination" },
   { key: "community", label: "Community", value: 10, color: "#c6a3ff", type: "Community destination" },
 ];
 

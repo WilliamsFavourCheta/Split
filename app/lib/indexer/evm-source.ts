@@ -106,17 +106,26 @@ export async function getFinalizedEvents(fromBlock: bigint, toBlock: bigint): Pr
         sqrtPriceX96: required<bigint>(args, "sqrtPriceX96").toString(),
         lpFee: Number(required<bigint>(args, "lpFee")),
       });
+    } else if (event.eventName === "LaunchProtocolFeeCharged") {
+      result.push({
+        ...base,
+        type: "LaunchProtocolFeeCharged",
+        poolId: required<string>(args, "poolId"),
+        tokenAddress: required<string>(args, "token"),
+        creatorAddress: required<string>(args, "creator"),
+        rawAmount: required<bigint>(args, "amount").toString(),
+      });
     } else if (event.eventName === "SplitConfigured") {
       result.push({
         ...base,
         type: "SplitConfigured",
         poolId: required<string>(args, "poolId"),
         creatorAddress: required<string>(args, "creator"),
-        treasuryAddress: required<string>(args, "treasury"),
+        projectTreasuryAddress: required<string>(args, "projectTreasury"),
         communityAddress: required<string>(args, "community"),
         creatorBps: Number(required<bigint>(args, "creatorBps")),
         liquidityBps: Number(required<bigint>(args, "liquidityBps")),
-        treasuryBps: Number(required<bigint>(args, "treasuryBps")),
+        projectTreasuryBps: Number(required<bigint>(args, "projectTreasuryBps")),
         communityBps: Number(required<bigint>(args, "communityBps")),
       });
     } else if (event.eventName === "FeesAccrued") {
@@ -135,8 +144,9 @@ export async function getFinalizedEvents(fromBlock: bigint, toBlock: bigint): Pr
         poolId: required<string>(args, "poolId"),
         currency: required<string>(args, "currency"),
         grossAmount: required<bigint>(args, "grossAmount").toString(),
+        protocolAllocation: required<bigint>(args, "protocolAllocation").toString(),
         creatorAllocation: required<bigint>(args, "creatorAllocation").toString(),
-        treasuryAllocation: required<bigint>(args, "treasuryAllocation").toString(),
+        projectTreasuryAllocation: required<bigint>(args, "projectTreasuryAllocation").toString(),
         communityAllocation: required<bigint>(args, "communityAllocation").toString(),
         liquidityAllocation: required<bigint>(args, "liquidityAllocation").toString(),
       });
@@ -147,6 +157,15 @@ export async function getFinalizedEvents(fromBlock: bigint, toBlock: bigint): Pr
         poolId: required<string>(args, "poolId"),
         recipientAddress: required<string>(args, "recipient"),
         currency: required<string>(args, "currency"),
+        rawAmount: required<bigint>(args, "amount").toString(),
+      });
+    } else if (event.eventName === "ProtocolFeesClaimed") {
+      result.push({
+        ...base,
+        type: "ProtocolFeesClaimed",
+        poolId: required<string>(args, "poolId"),
+        currency: required<string>(args, "currency"),
+        recipientAddress: required<string>(args, "recipient"),
         rawAmount: required<bigint>(args, "amount").toString(),
       });
     } else if (event.eventName === "LiquidityCredited") {

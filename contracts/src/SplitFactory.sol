@@ -20,6 +20,7 @@ contract SplitFactory {
     uint256 public constant TOTAL_SUPPLY = 1_000_000_000 ether;
     uint24 public constant LP_FEE = 3_000;
     int24 public constant TICK_SPACING = 60;
+    uint256 public constant LAUNCH_FEE = 0.0005 ether;
     uint256 private constant Q192 = 1 << 192;
     /// @notice v1 uses native ETH (Currency.wrap(address(0))), not WETH.
     Currency public constant APPROVED_QUOTE_CURRENCY = Currency.wrap(address(0));
@@ -28,7 +29,7 @@ contract SplitFactory {
     SplitHook public immutable hook;
     SplitFeeRouter public immutable feeRouter;
     SplitLiquidityVault public immutable liquidityVault;
-    address public immutable treasury;
+    address public immutable protocolTreasury;
 
     mapping(PoolId => address) public tokenForPool;
     mapping(address => PoolId) public poolForToken;
@@ -37,15 +38,24 @@ contract SplitFactory {
     error InvalidLaunch();
     error AlreadyLaunched();
     error PoolInitializationFailed();
+    error InsufficientLaunchValue(uint256 required, uint256 supplied);
+    error Reentrancy();
+
+    bool private launching;
+    event LaunchProtocolFeeCharged(
+        PoolId indexed poolId, address indexed token, address indexed creator, uint256 amount
+    );
 
     struct LaunchParams {
         string name;
         string symbol;
         uint256 tokenSeedAmount;
+        uint256 seedQuoteAmount;
         uint256 creatorBps;
         uint256 liquidityBps;
-        uint256 treasuryBps;
+        uint256 projectTreasuryBps;
         uint256 communityBps;
+        address projectTreasury;
         address community;
         bytes32 salt;
     }
@@ -69,31 +79,40 @@ contract SplitFactory {
         SplitHook hook_,
         SplitFeeRouter router_,
         SplitLiquidityVault vault_,
-        address treasury_
+        address protocolTreasury_
     ) {
         require(
             address(manager_) != address(0) && address(hook_) != address(0) && address(router_) != address(0)
-                && address(vault_) != address(0) && treasury_ != address(0),
+                && address(vault_) != address(0) && protocolTreasury_ != address(0),
             "ZERO_ADDRESS"
         );
         poolManager = manager_;
         hook = hook_;
         feeRouter = router_;
         liquidityVault = vault_;
-        treasury = treasury_;
+        protocolTreasury = protocolTreasury_;
     }
 
     receive() external payable {}
 
     function launch(LaunchParams calldata p) external payable returns (address token, PoolId poolId) {
+        if (launching) revert Reentrancy();
         if (
             bytes(p.name).length == 0 || bytes(p.name).length > 64 || bytes(p.symbol).length == 0
                 || bytes(p.symbol).length > 16 || p.tokenSeedAmount == 0 || p.tokenSeedAmount > TOTAL_SUPPLY
-                || msg.value == 0 || p.community == address(0)
-                || p.creatorBps + p.liquidityBps + p.treasuryBps + p.communityBps != 10_000
+                || p.seedQuoteAmount == 0 || p.community == address(0)
+                || p.creatorBps + p.liquidityBps + p.projectTreasuryBps + p.communityBps != 10_000
                 || p.creatorBps > type(uint16).max || p.liquidityBps > type(uint16).max
-                || p.treasuryBps > type(uint16).max || p.communityBps > type(uint16).max
+                || p.projectTreasuryBps > type(uint16).max || p.communityBps > type(uint16).max
         ) revert InvalidLaunch();
+        uint256 requiredValue = LAUNCH_FEE + p.seedQuoteAmount;
+        if (msg.value < requiredValue) revert InsufficientLaunchValue(requiredValue, msg.value);
+        launching = true;
+        uint256 balanceBefore = address(this).balance - msg.value;
+
+        // Credit the pull-claim router rather than calling a treasury recipient
+        // during launch. Reversion later in this transaction rolls this credit back.
+        feeRouter.creditProtocolLaunchFee{value: LAUNCH_FEE}();
 
         SplitToken newToken = new SplitToken(p.name, p.symbol, TOTAL_SUPPLY, address(this));
         token = address(newToken);
@@ -108,15 +127,15 @@ contract SplitFactory {
         poolId = key.toId();
         if (tokenForPool[poolId] != address(0)) revert AlreadyLaunched();
 
-        uint160 sqrtPriceX96 = _initialSqrtPrice(msg.value, p.tokenSeedAmount);
+        uint160 sqrtPriceX96 = _initialSqrtPrice(p.seedQuoteAmount, p.tokenSeedAmount);
         feeRouter.configure(
             poolId,
             msg.sender,
-            treasury,
+            p.projectTreasury,
             p.community,
             uint16(p.creatorBps),
             uint16(p.liquidityBps),
-            uint16(p.treasuryBps),
+            uint16(p.projectTreasuryBps),
             uint16(p.communityBps)
         );
         hook.registerPool(key);
@@ -131,12 +150,16 @@ contract SplitFactory {
         }
 
         require(newToken.transfer(address(liquidityVault), p.tokenSeedAmount), "SEED_TRANSFER_FAILED");
-        liquidityVault.seedPosition{value: msg.value}(key, sqrtPriceX96, p.tokenSeedAmount, msg.value, p.salt);
+        liquidityVault.seedPosition{value: p.seedQuoteAmount}(
+            key, sqrtPriceX96, p.tokenSeedAmount, p.seedQuoteAmount, p.salt
+        );
         uint256 creatorSupply = newToken.balanceOf(address(this));
         require(newToken.transfer(msg.sender, creatorSupply), "CREATOR_TRANSFER_FAILED");
-        uint256 quoteRefund = address(this).balance;
-        if (quoteRefund != 0) {
-            (bool ok,) = msg.sender.call{value: quoteRefund}("");
+        // Return any excess msg.value and seed quote unused by the LP. Preserve
+        // the factory's pre-existing balance (including any forced ether).
+        uint256 refundAmount = address(this).balance - balanceBefore;
+        if (refundAmount != 0) {
+            (bool ok,) = msg.sender.call{value: refundAmount}("");
             require(ok, "REFUND_FAILED");
         }
 
@@ -149,10 +172,12 @@ contract SplitFactory {
             key.currency0,
             TOTAL_SUPPLY,
             p.tokenSeedAmount,
-            msg.value,
+            p.seedQuoteAmount,
             sqrtPriceX96,
             LP_FEE
         );
+        emit LaunchProtocolFeeCharged(poolId, token, msg.sender, LAUNCH_FEE);
+        launching = false;
     }
 
     function _initialSqrtPrice(uint256 quoteAmount, uint256 tokenAmount) private pure returns (uint160 sqrtPriceX96) {

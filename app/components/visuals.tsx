@@ -26,7 +26,7 @@ export function RouteCore({ compact = false, allocations }: { compact?: boolean;
   const values = allocations ?? [
     { label: "Creator", value: 40, color: "#9c6cff" },
     { label: "Liquidity", value: 30, color: "#8150ed" },
-    { label: "Treasury", value: 20, color: "#6135bd" },
+      { label: "Project Treasury", value: 20, color: "#6135bd" },
     { label: "Community", value: 10, color: "#c6a3ff" },
   ];
   return (
@@ -67,5 +67,5 @@ export function PriceChart({ period = "24H" }: { period?: string }) {
 }
 
 export function FlowDiagram({ allocations }: { allocations: Allocation[] }) {
-  return <div className="flow-diagram"><div className="flow-input"><span>Transaction fee</span><strong>1%</strong></div><div className="flow-line" /><div className="flow-output"><FeeBars allocations={allocations} /></div><div className="flow-execution"><span className="eyebrow">Execution</span><div>{allocations.map((item) => <span key={item.key} style={{ "--dot-color": item.color } as React.CSSProperties}>{item.label.slice(0, 4)}</span>)}</div></div></div>;
+  return <div className="flow-diagram"><div className="flow-input"><span>Gross SPLIT fee</span><strong>1% of trade</strong></div><div className="flow-line" /><div className="flow-output"><div className="protocol-fee-row"><strong>Protocol Treasury · 10%</strong><span>of collected SPLIT fee</span></div><p>Remaining 90% → project split</p><FeeBars allocations={allocations} /></div><div className="flow-execution"><span className="eyebrow">Execution</span><div>{allocations.map((item) => <span key={item.label} style={{ "--dot-color": item.color } as React.CSSProperties}>{item.label.slice(0, 4)}</span>)}</div></div></div>;
 }

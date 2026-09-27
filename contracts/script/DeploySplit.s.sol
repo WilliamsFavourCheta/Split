@@ -36,7 +36,7 @@ contract DeploySplit {
         }
 
         IPoolManager manager = IPoolManager(vm.envAddress("SPLIT_POOL_MANAGER"));
-        address treasury = vm.envAddress("SPLIT_PROTOCOL_TREASURY");
+        address protocolTreasury = vm.envAddress("SPLIT_PROTOCOL_TREASURY");
         if (address(manager).code.length == 0) revert PoolManagerHasNoCode();
 
         // RH testnet currently has no official compatible v4 PoolManager.
@@ -51,7 +51,7 @@ contract DeploySplit {
         vm.startBroadcast();
         SplitStackDeployer deployer = new SplitStackDeployer();
         bytes32 salt = _findHookSalt(manager, address(deployer));
-        (factory, hook, router, vault) = deployer.deploy(manager, treasury, salt);
+        (factory, hook, router, vault) = deployer.deploy(manager, protocolTreasury, salt);
         vm.stopBroadcast();
     }
 

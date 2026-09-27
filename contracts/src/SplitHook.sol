@@ -18,7 +18,7 @@ contract SplitHook {
     using PoolIdLibrary for PoolKey;
     using BalanceDeltaLibrary for BalanceDelta;
 
-    uint256 public constant PROTOCOL_FEE_BPS = 100;
+    uint256 public constant SWAP_FEE_BPS = 100;
     uint256 private constant BPS = 10_000;
     uint160 public constant REQUIRED_HOOK_MASK = 0x44;
 
@@ -78,7 +78,7 @@ contract SplitHook {
         Currency feeCurrency = feeCurrency0 ? key.currency0 : key.currency1;
         int128 raw = feeCurrency0 ? delta.amount0() : delta.amount1();
         uint256 tradedAmount = uint256(raw < 0 ? -int256(raw) : int256(raw));
-        uint256 fee = tradedAmount * PROTOCOL_FEE_BPS / BPS;
+        uint256 fee = tradedAmount * SWAP_FEE_BPS / BPS;
         if (fee == 0) return (this.afterSwap.selector, 0);
         if (fee > uint256(uint128(type(int128).max))) revert InvalidPool();
 

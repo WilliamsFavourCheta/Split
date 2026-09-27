@@ -47,5 +47,5 @@ function StepNarrative() {
 }
 
 function HowFlow({ compact = false }: { compact?: boolean }) {
-  return <div className={`how-flow ${compact ? "how-flow-compact" : ""}`} aria-label="Trade fee flows into SPLIT core and routes to four destinations"><div className="how-flow-source"><span>Trade</span><i /><span>Fee source</span><i /></div><div className="how-flow-core">Split core</div><div className="how-flow-branches">{["Creator", "Liquidity", "Treasury", "Community"].map((label, index) => <span className={`branch-${index + 1}`} key={label}><i /><b>{label}</b></span>)}</div></div>;
+  return <div className={`how-flow ${compact ? "how-flow-compact" : ""}`} aria-label="Trade fee flows into SPLIT core and routes to four destinations"><div className="how-flow-source"><span>Trade</span><i /><span>Fee source</span><i /></div><div className="how-flow-core">Split core</div><div className="how-flow-branches">{["Creator", "Liquidity", "Project Treasury", "Community"].map((label, index) => <span className={`branch-${index + 1}`} key={label}><i /><b>{label}</b></span>)}</div></div>;
 }

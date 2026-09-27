@@ -19,6 +19,7 @@ import {Position} from "v4-core/libraries/Position.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {IUnlockCallback} from "v4-core/interfaces/callback/IUnlockCallback.sol";
 import {SafeCast} from "v4-core/libraries/SafeCast.sol";
+import {SplitStackDeployer as ProductionSplitStackDeployer} from "../script/SplitStackDeployer.sol";
 
 interface Vm {
     function prank(address) external;
@@ -28,6 +29,7 @@ interface Vm {
     function envString(string calldata) external view returns (string memory);
     function envUint(string calldata) external view returns (uint256);
     function createSelectFork(string calldata, uint256) external returns (uint256);
+    function load(address, bytes32) external view returns (bytes32);
     function skip(bool) external;
 }
 
@@ -36,6 +38,14 @@ contract NativeReceiver {
 
     function claim(SplitFeeRouter router, PoolId poolId, Currency currency) external {
         router.claim(poolId, currency);
+    }
+
+    function claimProtocol(SplitFeeRouter router, PoolId poolId, Currency currency) external {
+        router.claimProtocolFees(poolId, currency);
+    }
+
+    function claimProtocolLaunchFees(SplitFeeRouter router) external {
+        router.claimProtocolLaunchFees();
     }
 }
 
@@ -46,6 +56,14 @@ contract RevertingReceiver {
 
     function claim(SplitFeeRouter router, PoolId poolId, Currency currency) external {
         router.claim(poolId, currency);
+    }
+
+    function claimProtocol(SplitFeeRouter router, PoolId poolId, Currency currency) external {
+        router.claimProtocolFees(poolId, currency);
+    }
+
+    function claimProtocolLaunchFees(SplitFeeRouter router) external {
+        router.claimProtocolLaunchFees();
     }
 }
 
@@ -236,7 +254,7 @@ contract SplitStackDeployer {
         require(found, "HOOK_SALT_NOT_FOUND");
 
         vault = new SplitLiquidityVault(factoryAddress, routerAddress, manager);
-        router = new SplitFeeRouter(factoryAddress, hookAddress, vault);
+        router = new SplitFeeRouter(factoryAddress, hookAddress, vault, treasury);
         address deployedHook;
         assembly ("memory-safe") {
             deployedHook := create2(0, add(hookCode, 0x20), mload(hookCode), salt)
@@ -272,6 +290,7 @@ contract SplitProtocolTest is IUnlockCallback {
     uint256 public lastSwapOutput;
     uint256 public lastSwapInput;
     bool private activeZeroForOne = true;
+    bool private activeRemovalAttempt;
 
     event ForkSwapMeasured(
         bool exactOutput,
@@ -283,6 +302,17 @@ contract SplitProtocolTest is IUnlockCallback {
         int256 traderDelta1,
         uint256 fee
     );
+    event ForkClaimGas(
+        address indexed recipient,
+        address indexed currency,
+        uint256 expectedAmount,
+        uint256 claimableBefore,
+        uint256 recipientBalanceBefore,
+        uint256 gasUsed,
+        uint256 claimableAfter,
+        uint256 recipientBalanceAfter
+    );
+    event ForkRejectedClaimGas(address indexed recipient, address indexed currency, uint256 claimable, uint256 gasUsed);
 
     receive() external payable {}
 
@@ -310,20 +340,59 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(123)));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
         vm.deal(address(this), 10_000);
         router.route{value: 10_000}(poolId, Currency.wrap(address(0)), 10_000);
 
-        require(router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 4_000, "CREATOR_SHARE");
-        require(router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 2_000, "TREASURY_SHARE");
-        require(router.claimable(poolId, address(community), Currency.wrap(address(0))) == 1_000, "COMMUNITY_SHARE");
-        require(address(vault).balance == 3_000, "VAULT_SHARE");
-        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 3_000, "VAULT_ACCOUNTING");
+        require(router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 3_600, "CREATOR_SHARE");
+        require(
+            router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 1_800, "PROJECT_TREASURY_SHARE"
+        );
+        require(router.claimable(poolId, address(community), Currency.wrap(address(0))) == 900, "COMMUNITY_SHARE");
+        require(router.protocolClaimable(poolId, Currency.wrap(address(0))) == 1_000, "PROTOCOL_SHARE");
+        require(address(vault).balance == 2_700, "VAULT_SHARE");
+        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 2_700, "VAULT_ACCOUNTING");
         (address configuredCreator,,,,,,,) = router.splits(poolId);
         require(configuredCreator == address(creator), "CONFIG_NOT_IMMUTABLE");
+    }
+
+    function testGlobalProtocolTreasuryIsSeparateFromEachProjectTreasury() external {
+        NativeReceiver protocolTreasury = new NativeReceiver();
+        NativeReceiver projectTreasuryA = new NativeReceiver();
+        NativeReceiver projectTreasuryB = new NativeReceiver();
+        NativeReceiver creator = new NativeReceiver();
+        NativeReceiver community = new NativeReceiver();
+        MockLiquidityVault vault = new MockLiquidityVault();
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(protocolTreasury)
+        );
+        PoolId poolA = PoolId.wrap(bytes32(uint256(125)));
+        PoolId poolB = PoolId.wrap(bytes32(uint256(126)));
+        Currency currency = Currency.wrap(address(0));
+        router.configure(poolA, address(creator), address(projectTreasuryA), address(community), 0, 0, 10_000, 0);
+        router.configure(poolB, address(creator), address(projectTreasuryB), address(community), 0, 0, 10_000, 0);
+        require(address(protocolTreasury) != address(projectTreasuryA), "GLOBAL_EQUALS_PROJECT_A");
+        require(address(protocolTreasury) != address(projectTreasuryB), "GLOBAL_EQUALS_PROJECT_B");
+
+        vm.deal(address(this), 200);
+        router.route{value: 100}(poolA, currency, 100);
+        router.route{value: 100}(poolB, currency, 100);
+
+        require(router.protocolClaimable(poolA, currency) == 10, "POOL_A_GLOBAL_SHARE");
+        require(router.protocolClaimable(poolB, currency) == 10, "POOL_B_GLOBAL_SHARE");
+        require(router.claimable(poolA, address(projectTreasuryA), currency) == 90, "POOL_A_PROJECT_SHARE");
+        require(router.claimable(poolB, address(projectTreasuryB), currency) == 90, "POOL_B_PROJECT_SHARE");
+        require(router.claimable(poolA, address(protocolTreasury), currency) == 0, "GLOBAL_IN_PROJECT_LEDGER");
+        require(router.claimable(poolB, address(protocolTreasury), currency) == 0, "GLOBAL_IN_OTHER_PROJECT_LEDGER");
+        (address configuredA, address configuredProjectA,,,,,,) = router.splits(poolA);
+        (address configuredB, address configuredProjectB,,,,,,) = router.splits(poolB);
+        require(configuredA == address(creator) && configuredB == address(creator), "CREATOR_CONFIG");
+        require(configuredProjectA == address(projectTreasuryA), "PROJECT_A_DESTINATION");
+        require(configuredProjectB == address(projectTreasuryB), "PROJECT_B_DESTINATION");
     }
 
     function testRouterAssignsAllRoundingDustToVault() external {
@@ -331,16 +400,20 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(124)));
         router.configure(poolId, address(creator), address(treasury), address(community), 3_333, 0, 3_333, 3_334);
         vm.deal(address(this), 101);
         router.route{value: 101}(poolId, Currency.wrap(address(0)), 101);
-        require(router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 33, "CREATOR_ROUNDING");
-        require(router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 33, "TREASURY_ROUNDING");
-        require(router.claimable(poolId, address(community), Currency.wrap(address(0))) == 33, "COMMUNITY_ROUNDING");
-        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 2, "DUST_NOT_TO_VAULT");
+        require(router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 30, "CREATOR_ROUNDING");
+        require(
+            router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 30, "PROJECT_TREASURY_ROUNDING"
+        );
+        require(router.claimable(poolId, address(community), Currency.wrap(address(0))) == 30, "COMMUNITY_ROUNDING");
+        require(router.protocolClaimable(poolId, Currency.wrap(address(0))) == 10, "PROTOCOL_ROUNDING");
+        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 1, "DUST_NOT_TO_VAULT");
     }
 
     function testUneven3333_3333_3333_1SplitConservesGrossFee() external {
@@ -348,34 +421,37 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(1_234)));
         router.configure(poolId, address(creator), address(treasury), address(community), 3_333, 3_333, 3_333, 1);
         vm.deal(address(this), 10_000);
         router.route{value: 10_000}(poolId, Currency.wrap(address(0)), 10_000);
 
         require(
-            router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 3_333, "UNEQUAL_CREATOR_AMOUNT"
+            router.claimable(poolId, address(creator), Currency.wrap(address(0))) == 2_999, "UNEQUAL_CREATOR_AMOUNT"
         );
-        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 3_333, "UNEQUAL_LIQUIDITY_AMOUNT");
+        require(vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 3_002, "UNEQUAL_LIQUIDITY_AMOUNT");
         require(
-            router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 3_333, "UNEQUAL_TREASURY_AMOUNT"
+            router.claimable(poolId, address(treasury), Currency.wrap(address(0))) == 2_999, "UNEQUAL_TREASURY_AMOUNT"
         );
         require(
-            router.claimable(poolId, address(community), Currency.wrap(address(0))) == 1, "UNEQUAL_COMMUNITY_AMOUNT"
+            router.claimable(poolId, address(community), Currency.wrap(address(0))) == 0, "UNEQUAL_COMMUNITY_AMOUNT"
         );
         require(
             router.totalRecipientAllocated(poolId, Currency.wrap(address(0)))
-                    + vault.pendingLiquidity(poolId, Currency.wrap(address(0))) == 10_000,
+                    + vault.pendingLiquidity(poolId, Currency.wrap(address(0)))
+                    + router.protocolClaimable(poolId, Currency.wrap(address(0))) == 10_000,
             "UNEQUAL_SPLIT_NOT_CONSERVED"
         );
     }
 
     function testSplitRejectsNon100PercentAndSecondConfiguration() external {
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(125)));
         vm.expectRevert();
         router.configure(poolId, address(1), address(2), address(3), 4_000, 3_000, 2_000, 999);
@@ -386,8 +462,9 @@ contract SplitProtocolTest is IUnlockCallback {
 
     function testConfigurationRejectsZeroDestinationAndUnauthorizedCaller() external {
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(126)));
         vm.expectRevert();
         router.configure(poolId, address(0), address(2), address(3), 4_000, 3_000, 2_000, 1_000);
@@ -401,8 +478,9 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         address[4] memory destinations = [address(creator), address(treasury), address(community), address(vault)];
         uint16[4] memory creators = [uint16(10_000), 0, 0, 0];
         uint16[4] memory liquidity = [uint16(0), 10_000, 0, 0];
@@ -424,21 +502,103 @@ contract SplitProtocolTest is IUnlockCallback {
             router.route{value: 10_000}(poolId, Currency.wrap(address(0)), 10_000);
         }
         require(
-            router.claimable(PoolId.wrap(bytes32(uint256(1))), address(creator), Currency.wrap(address(0))) == 10_000,
+            router.claimable(PoolId.wrap(bytes32(uint256(1))), address(creator), Currency.wrap(address(0))) == 9_000,
             "100_CREATOR"
         );
         require(
-            router.claimable(PoolId.wrap(bytes32(uint256(3))), address(treasury), Currency.wrap(address(0))) == 10_000,
+            router.claimable(PoolId.wrap(bytes32(uint256(3))), address(treasury), Currency.wrap(address(0))) == 9_000,
             "100_TREASURY"
         );
         require(
-            router.claimable(PoolId.wrap(bytes32(uint256(4))), address(community), Currency.wrap(address(0))) == 10_000,
+            router.claimable(PoolId.wrap(bytes32(uint256(4))), address(community), Currency.wrap(address(0))) == 9_000,
             "100_COMMUNITY"
         );
         require(
-            vault.pendingLiquidity(PoolId.wrap(bytes32(uint256(2))), Currency.wrap(address(0))) == 10_000,
+            vault.pendingLiquidity(PoolId.wrap(bytes32(uint256(2))), Currency.wrap(address(0))) == 9_000,
             "100_LIQUIDITY"
         );
+    }
+
+    function testProtocolShareIsIndependentOfProjectTreasuryAndSmallFeeRounding() external {
+        NativeReceiver creator = new NativeReceiver();
+        NativeReceiver community = new NativeReceiver();
+        MockLiquidityVault vault = new MockLiquidityVault();
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
+        Currency nativeCurrency = Currency.wrap(address(0));
+        PoolId zeroTreasuryPool = PoolId.wrap(bytes32(uint256(20_001)));
+        router.configure(zeroTreasuryPool, address(creator), address(0), address(community), 10_000, 0, 0, 0);
+        vm.deal(address(this), 101);
+        router.route{value: 1}(zeroTreasuryPool, nativeCurrency, 1);
+        require(router.protocolClaimable(zeroTreasuryPool, nativeCurrency) == 0, "SUB_10_UNIT_PROTOCOL_ROUNDS_DOWN");
+        require(router.claimable(zeroTreasuryPool, address(creator), nativeCurrency) == 1, "SMALL_FEE_TO_PROJECT");
+        router.route{value: 100}(zeroTreasuryPool, nativeCurrency, 100);
+        require(
+            router.protocolClaimable(zeroTreasuryPool, nativeCurrency) == 10,
+            "PROTOCOL_FIXED_WITH_ZERO_PROJECT_TREASURY"
+        );
+        require(router.claimable(zeroTreasuryPool, address(creator), nativeCurrency) == 91, "PROJECT_SHARE_NOT_90");
+    }
+
+    function testUnauthorizedProtocolClaimAndRevertingProtocolTreasuryPreserveLedger() external {
+        NativeReceiver creator = new NativeReceiver();
+        NativeReceiver community = new NativeReceiver();
+        RevertingReceiver globalTreasury = new RevertingReceiver();
+        MockLiquidityVault vault = new MockLiquidityVault();
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(globalTreasury)
+        );
+        PoolId poolId = PoolId.wrap(bytes32(uint256(20_002)));
+        Currency currency = Currency.wrap(address(0));
+        router.configure(poolId, address(creator), address(0), address(community), 10_000, 0, 0, 0);
+        vm.deal(address(this), 1_000);
+        router.route{value: 1_000}(poolId, currency, 1_000);
+        vm.expectRevert();
+        router.claimProtocolFees(poolId, currency);
+        require(router.protocolClaimable(poolId, currency) == 100, "UNAUTHORIZED_CLAIM_CHANGED_LEDGER");
+        (bool success,) =
+            address(globalTreasury).call(abi.encodeCall(globalTreasury.claimProtocol, (router, poolId, currency)));
+        require(!success, "REVERTING_GLOBAL_TREASURY_PAID");
+        require(router.protocolClaimable(poolId, currency) == 100, "FAILED_PROTOCOL_CLAIM_LOST_FUNDS");
+        require(router.claimable(poolId, address(creator), currency) == 900, "TREASURY_REJECTION_BLOCKED_PROJECT");
+        vm.expectRevert();
+        router.claimProtocolLaunchFees();
+    }
+
+    function testLaunchFeeIsAccruedSeparatelyAndOnlySuccessfulLaunchKeepsIt() external {
+        PoolManager manager = new PoolManager(address(this));
+        NativeReceiver treasury = new NativeReceiver();
+        SplitStackDeployer deployer = new SplitStackDeployer();
+        (SplitFactory factory,, SplitFeeRouter router,) =
+            deployer.deploy(IPoolManager(address(manager)), address(treasury));
+        SplitFactory.LaunchParams memory params = SplitFactory.LaunchParams({
+            name: "Launch Fee",
+            symbol: "FEE",
+            tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 10_000,
+            liquidityBps: 0,
+            projectTreasuryBps: 0,
+            communityBps: 0,
+            projectTreasury: address(0),
+            community: address(0xCAFE),
+            salt: keccak256("v11-launch-fee")
+        });
+        vm.deal(address(this), 2 ether);
+        vm.expectRevert();
+        factory.launch{value: 1 ether}(params);
+        require(router.protocolLaunchFeesAccrued() == 0, "FAILED_LAUNCH_LEFT_FEE");
+        (address token, PoolId poolId) = factory.launch{value: 1.0005 ether}(params);
+        require(factory.launchedToken(token), "LAUNCH_FAILED");
+        require(router.protocolLaunchFeesAccrued() == 0.0005 ether, "FIXED_LAUNCH_FEE_NOT_ACCRUED");
+        require(
+            router.liquidityVault().pendingLiquidity(poolId, Currency.wrap(address(0))) == 0, "LAUNCH_FEE_WENT_TO_VAULT"
+        );
+        vm.expectRevert();
+        router.claimProtocolLaunchFees();
+        treasury.claimProtocolLaunchFees(router);
+        require(address(treasury).balance == 0.0005 ether, "LAUNCH_FEE_NOT_CLAIMED_TO_GLOBAL_TREASURY");
     }
 
     function testRevertingRecipientDoesNotBlockOtherAllocationsOrFutureProcessing() external {
@@ -446,21 +606,61 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         RevertingReceiver community = new RevertingReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(999)));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
         vm.deal(address(this), 20_000);
         Currency currency = Currency.wrap(address(0));
         router.route{value: 10_000}(poolId, currency, 10_000);
-        require(router.claimable(poolId, address(creator), currency) == 4_000, "CREATOR_BLOCKED");
-        require(router.claimable(poolId, address(treasury), currency) == 2_000, "TREASURY_BLOCKED");
-        require(router.claimable(poolId, address(community), currency) == 1_000, "COMMUNITY_NOT_CLAIMABLE");
-        require(vault.pendingLiquidity(poolId, currency) == 3_000, "LIQUIDITY_BLOCKED");
+        require(router.claimable(poolId, address(creator), currency) == 3_600, "CREATOR_BLOCKED");
+        require(router.claimable(poolId, address(treasury), currency) == 1_800, "PROJECT_TREASURY_BLOCKED");
+        require(router.claimable(poolId, address(community), currency) == 900, "COMMUNITY_NOT_CLAIMABLE");
+        require(router.protocolClaimable(poolId, currency) == 1_000, "PROTOCOL_NOT_CLAIMABLE");
+        require(vault.pendingLiquidity(poolId, currency) == 2_700, "LIQUIDITY_BLOCKED");
         router.route{value: 10_000}(poolId, currency, 10_000);
-        require(router.claimable(poolId, address(creator), currency) == 8_000, "FUTURE_PROCESS_BLOCKED");
-        require(router.claimable(poolId, address(community), currency) == 2_000, "FUTURE_COMMUNITY_BLOCKED");
-        require(vault.pendingLiquidity(poolId, currency) == 6_000, "FUTURE_LIQUIDITY_BLOCKED");
+        require(router.claimable(poolId, address(creator), currency) == 7_200, "FUTURE_PROCESS_BLOCKED");
+        require(router.claimable(poolId, address(community), currency) == 1_800, "FUTURE_COMMUNITY_BLOCKED");
+        require(router.protocolClaimable(poolId, currency) == 2_000, "FUTURE_PROTOCOL_BLOCKED");
+        require(vault.pendingLiquidity(poolId, currency) == 5_400, "FUTURE_LIQUIDITY_BLOCKED");
+    }
+
+    function testRevertingProjectTreasuryCannotBlockOtherClaimsOrPools() external {
+        NativeReceiver protocolTreasury = new NativeReceiver();
+        NativeReceiver creator = new NativeReceiver();
+        RevertingReceiver projectTreasury = new RevertingReceiver();
+        NativeReceiver community = new NativeReceiver();
+        MockLiquidityVault vault = new MockLiquidityVault();
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(protocolTreasury)
+        );
+        PoolId poolId = PoolId.wrap(bytes32(uint256(1_008)));
+        Currency currency = Currency.wrap(address(0));
+        router.configure(
+            poolId, address(creator), address(projectTreasury), address(community), 4_000, 3_000, 2_000, 1_000
+        );
+        vm.deal(address(this), 20_000);
+        router.route{value: 10_000}(poolId, currency, 10_000);
+
+        (bool projectClaimSucceeded,) =
+            address(projectTreasury).call(abi.encodeCall(projectTreasury.claim, (router, poolId, currency)));
+        require(!projectClaimSucceeded, "REJECTING_PROJECT_TREASURY_CLAIM_SUCCEEDED");
+        require(router.claimable(poolId, address(projectTreasury), currency) == 1_800, "PROJECT_BALANCE_NOT_RETRYABLE");
+
+        creator.claim(router, poolId, currency);
+        community.claim(router, poolId, currency);
+        protocolTreasury.claimProtocol(router, poolId, currency);
+        require(address(creator).balance == 3_600, "CREATOR_CLAIM_BLOCKED");
+        require(address(community).balance == 900, "COMMUNITY_CLAIM_BLOCKED");
+        require(address(protocolTreasury).balance == 1_000, "PROTOCOL_CLAIM_BLOCKED");
+        require(vault.pendingLiquidity(poolId, currency) == 2_700, "VAULT_CREDIT_BLOCKED");
+
+        PoolId otherPool = PoolId.wrap(bytes32(uint256(1_009)));
+        router.configure(otherPool, address(creator), address(projectTreasury), address(community), 10_000, 0, 0, 0);
+        router.route{value: 1_000}(otherPool, currency, 1_000);
+        require(router.protocolClaimable(otherPool, currency) == 100, "OTHER_POOL_PROTOCOL_BLOCKED");
+        require(router.claimable(otherPool, address(creator), currency) == 900, "OTHER_POOL_CREATOR_BLOCKED");
     }
 
     function testCommunityRejectedClaimPreservesBalanceWhileCreatorAndTreasuryClaim() external {
@@ -468,8 +668,9 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         RevertingReceiver community = new RevertingReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(1_001)));
         Currency currency = Currency.wrap(address(0));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
@@ -478,18 +679,21 @@ contract SplitProtocolTest is IUnlockCallback {
         (bool communityClaimSucceeded,) =
             address(community).call(abi.encodeCall(community.claim, (router, poolId, currency)));
         require(!communityClaimSucceeded, "REJECTING_COMMUNITY_CLAIM_SUCCEEDED");
-        require(router.claimable(poolId, address(community), currency) == 1_000, "FAILED_CLAIM_LOST_BALANCE");
+        require(router.claimable(poolId, address(community), currency) == 900, "FAILED_CLAIM_LOST_BALANCE");
 
         vm.prank(address(creator));
         router.claim(poolId, currency);
         vm.prank(address(treasury));
         router.claim(poolId, currency);
-        require(address(creator).balance == 4_000, "CREATOR_CLAIM_FAILED");
-        require(address(treasury).balance == 2_000, "TREASURY_CLAIM_FAILED");
+        vm.prank(address(this));
+        router.claimProtocolFees(poolId, currency);
+        require(address(creator).balance == 3_600, "CREATOR_CLAIM_FAILED");
+        require(address(this).balance >= 1_000, "PROTOCOL_CLAIM_FAILED");
+        require(address(treasury).balance == 1_800, "PROJECT_TREASURY_CLAIM_FAILED");
         require(router.claimable(poolId, address(creator), currency) == 0, "CREATOR_NOT_CLEARED");
         require(router.claimable(poolId, address(treasury), currency) == 0, "TREASURY_NOT_CLEARED");
-        require(router.claimable(poolId, address(community), currency) == 1_000, "COMMUNITY_NOT_RETRYABLE");
-        require(router.totalRecipientClaimed(poolId, currency) == 6_000, "CLAIM_TOTAL_WRONG");
+        require(router.claimable(poolId, address(community), currency) == 900, "COMMUNITY_NOT_RETRYABLE");
+        require(router.totalRecipientClaimed(poolId, currency) == 5_400, "CLAIM_TOTAL_WRONG");
     }
 
     function testRecipientCannotClaimTwiceOrAnotherRecipientsAllocation() external {
@@ -497,8 +701,9 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(1_002)));
         Currency currency = Currency.wrap(address(0));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
@@ -509,17 +714,18 @@ contract SplitProtocolTest is IUnlockCallback {
         require(!thiefSucceeded, "THIEF_CLAIMED_FUNDS");
         vm.prank(address(creator));
         router.claim(poolId, currency);
-        require(address(creator).balance == 4_000, "FIRST_CLAIM_FAILED");
+        require(address(creator).balance == 3_600, "FIRST_CLAIM_FAILED");
         vm.prank(address(creator));
         (bool secondSucceeded,) = address(router).call(abi.encodeCall(router.claim, (poolId, currency)));
         require(!secondSucceeded, "DOUBLE_CLAIM_SUCCEEDED");
-        require(router.claimable(poolId, address(treasury), currency) == 2_000, "OTHER_BALANCE_CHANGED");
+        require(router.claimable(poolId, address(treasury), currency) == 1_800, "OTHER_BALANCE_CHANGED");
     }
 
     function testReentrantClaimCannotStealOrClaimTwice() external {
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(1_003)));
         Currency currency = Currency.wrap(address(0));
         ReentrantClaimReceiver creator = new ReentrantClaimReceiver(router, poolId, currency);
@@ -531,8 +737,8 @@ contract SplitProtocolTest is IUnlockCallback {
         router.claim(poolId, currency);
         require(creator.attempted(), "CALLBACK_NOT_ATTEMPTED");
         require(router.claimable(poolId, address(creator), currency) == 0, "REENTRANT_DOUBLE_CLAIM");
-        require(router.claimable(poolId, address(treasury), currency) == 2_000, "OTHER_FUNDS_STOLEN");
-        require(router.totalRecipientClaimed(poolId, currency) == 4_000, "CLAIMED_TOTAL_WRONG");
+        require(router.claimable(poolId, address(treasury), currency) == 1_800, "OTHER_FUNDS_STOLEN");
+        require(router.totalRecipientClaimed(poolId, currency) == 3_600, "CLAIMED_TOTAL_WRONG");
     }
 
     function testClaimsAreIsolatedByPoolAndCurrency() external {
@@ -540,8 +746,9 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId firstPool = PoolId.wrap(bytes32(uint256(1_004)));
         PoolId secondPool = PoolId.wrap(bytes32(uint256(1_005)));
         PoolId tokenPool = PoolId.wrap(bytes32(uint256(1_006)));
@@ -555,9 +762,9 @@ contract SplitProtocolTest is IUnlockCallback {
         router.route{value: 1_000}(firstPool, nativeCurrency, 1_000);
         router.route{value: 2_000}(secondPool, nativeCurrency, 2_000);
         router.route(tokenPool, tokenCurrency, 3_000);
-        require(router.claimable(firstPool, address(creator), nativeCurrency) == 400, "POOL_ONE_NATIVE");
-        require(router.claimable(secondPool, address(creator), nativeCurrency) == 800, "POOL_TWO_NATIVE");
-        require(router.claimable(tokenPool, address(creator), tokenCurrency) == 3_000, "TOKEN_CURRENCY");
+        require(router.claimable(firstPool, address(creator), nativeCurrency) == 360, "POOL_ONE_NATIVE");
+        require(router.claimable(secondPool, address(creator), nativeCurrency) == 720, "POOL_TWO_NATIVE");
+        require(router.claimable(tokenPool, address(creator), tokenCurrency) == 2_700, "TOKEN_CURRENCY");
         require(router.claimable(firstPool, address(creator), tokenCurrency) == 0, "CROSS_POOL_TOKEN_LEAK");
     }
 
@@ -566,27 +773,32 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(bytes32(uint256(1_007)));
         Currency currency = Currency.wrap(address(0));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
         uint256 total;
+        uint256 protocolTotal;
         vm.deal(address(this), 100_000);
         for (uint256 i = 1; i <= 10; ++i) {
             uint256 gross = i * 100;
             router.route{value: gross}(poolId, currency, gross);
             total += gross;
+            protocolTotal += gross / 10;
             creator.claim(router, poolId, currency);
             treasury.claim(router, poolId, currency);
             community.claim(router, poolId, currency);
+            router.claimProtocolFees(poolId, currency);
             require(router.claimable(poolId, address(creator), currency) == 0, "CREATOR_CLAIMABLE_REMAINS");
             require(router.claimable(poolId, address(treasury), currency) == 0, "TREASURY_CLAIMABLE_REMAINS");
             require(router.claimable(poolId, address(community), currency) == 0, "COMMUNITY_CLAIMABLE_REMAINS");
         }
         uint256 distributed = address(creator).balance + address(treasury).balance + address(community).balance
-            + vault.pendingLiquidity(poolId, currency);
+            + vault.pendingLiquidity(poolId, currency) + protocolTotal;
         require(distributed == total, "REPEATED_CYCLES_NOT_CONSERVED");
+        require(router.totalProtocolClaimed(poolId, currency) == protocolTotal, "PROTOCOL_DOUBLE_OR_MISSING_CLAIM");
     }
 
     function testFeeProcessingMakesNoExternalRecipientCalls() external {
@@ -603,15 +815,17 @@ contract SplitProtocolTest is IUnlockCallback {
             name: "Adversarial Recipient",
             symbol: "ATTACK",
             tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
             creatorBps: 4_000,
             liquidityBps: 3_000,
-            treasuryBps: 2_000,
+            projectTreasuryBps: 2_000,
             communityBps: 1_000,
+            projectTreasury: address(treasury),
             community: address(community),
             salt: keccak256("adversarial-recipient")
         });
         bytes memory launchResult =
-            creator.execute{value: 1 ether}(address(factory), abi.encodeCall(factory.launch, (launchParams)));
+            creator.execute{value: 1.0005 ether}(address(factory), abi.encodeCall(factory.launch, (launchParams)));
         (address tokenAddress, PoolId poolId) = abi.decode(launchResult, (address, PoolId));
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(0)),
@@ -640,7 +854,8 @@ contract SplitProtocolTest is IUnlockCallback {
 
         hook.flush(poolId, key.currency0);
         require(
-            router.claimable(poolId, address(creator), key.currency0) == accruedBefore * 4_000 / 10_000,
+            router.claimable(poolId, address(creator), key.currency0)
+                == (accruedBefore - accruedBefore / 10) * 4_000 / 10_000,
             "CREATOR_ALLOCATION_MISMATCH"
         );
         require(creator.received() == 0, "PROCESSING_PAID_CREATOR_DIRECTLY");
@@ -648,8 +863,9 @@ contract SplitProtocolTest is IUnlockCallback {
         require(!creator.hookReentrySucceeded() && !creator.nestedRouteSucceeded(), "RECIPIENT_CALLBACK_RAN");
         require(!creator.privilegedCallSucceeded(), "RECIPIENT_CHANGED_CONFIGURATION");
         require(hook.accrued(poolId, key.currency0) == 0, "ACCRUAL_NOT_ROUTED");
-        uint256 expectedVaultAmount = accruedBefore - accruedBefore * 4_000 / 10_000 - accruedBefore * 2_000 / 10_000
-            - accruedBefore * 1_000 / 10_000;
+        uint256 projectAmount = accruedBefore - accruedBefore / 10;
+        uint256 expectedVaultAmount =
+            projectAmount - projectAmount * 4_000 / 10_000 - projectAmount * 2_000 / 10_000 - projectAmount / 10;
         require(vault.pendingLiquidity(poolId, key.currency0) == expectedVaultAmount, "VAULT_SPLIT");
     }
 
@@ -667,15 +883,17 @@ contract SplitProtocolTest is IUnlockCallback {
             name: "Reverting Recipient",
             symbol: "REVERT",
             tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
             creatorBps: 4_000,
             liquidityBps: 3_000,
-            treasuryBps: 2_000,
+            projectTreasuryBps: 2_000,
             communityBps: 1_000,
+            projectTreasury: address(treasury),
             community: address(community),
             salt: keccak256("permanently-reverting-recipient")
         });
         bytes memory launchResult =
-            creator.execute{value: 1 ether}(address(factory), abi.encodeCall(factory.launch, (launchParams)));
+            creator.execute{value: 1.0005 ether}(address(factory), abi.encodeCall(factory.launch, (launchParams)));
         (address tokenAddress, PoolId poolId) = abi.decode(launchResult, (address, PoolId));
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(0)),
@@ -695,11 +913,13 @@ contract SplitProtocolTest is IUnlockCallback {
         hook.flush(poolId, key.currency0);
         require(hook.accrued(poolId, key.currency0) == 0, "FLUSH_BLOCKED");
         require(
-            router.claimable(poolId, address(creator), key.currency0) == accruedBefore * 4_000 / 10_000,
+            router.claimable(poolId, address(creator), key.currency0)
+                == (accruedBefore - accruedBefore / 10) * 4_000 / 10_000,
             "CREATOR_NOT_ALLOCATED"
         );
         require(
-            router.claimable(poolId, address(community), key.currency0) == accruedBefore / 10, "COMMUNITY_NOT_ALLOCATED"
+            router.claimable(poolId, address(community), key.currency0) == (accruedBefore - accruedBefore / 10) / 10,
+            "COMMUNITY_NOT_ALLOCATED"
         );
     }
 
@@ -721,8 +941,9 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver treasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
         MockLiquidityVault vault = new MockLiquidityVault();
-        SplitFeeRouter router =
-            new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        SplitFeeRouter router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         PoolId poolId = PoolId.wrap(keccak256(abi.encode(creatorSeed, liquiditySeed, treasurySeed, grossSeed)));
         router.configure(
             poolId,
@@ -738,7 +959,8 @@ contract SplitProtocolTest is IUnlockCallback {
         router.route{value: gross}(poolId, Currency.wrap(address(0)), gross);
 
         Currency currency = Currency.wrap(address(0));
-        uint256 routed = router.totalRecipientAllocated(poolId, currency) + vault.pendingLiquidity(poolId, currency);
+        uint256 routed = router.totalRecipientAllocated(poolId, currency) + vault.pendingLiquidity(poolId, currency)
+            + router.totalProtocolAllocated(poolId, currency);
         require(routed == gross, "ROUTER_NOT_CONSERVING");
     }
 
@@ -1007,14 +1229,16 @@ contract SplitProtocolTest is IUnlockCallback {
             name: "SPLIT End-to-End",
             symbol: "SPLITX",
             tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
             creatorBps: 4_000,
             liquidityBps: 3_000,
-            treasuryBps: 2_000,
+            projectTreasuryBps: 2_000,
             communityBps: 1_000,
+            projectTreasury: address(treasury),
             community: address(community),
             salt: keccak256("end-to-end")
         });
-        (address tokenAddress, PoolId poolId) = factory.launch{value: 1 ether}(params);
+        (address tokenAddress, PoolId poolId) = factory.launch{value: 1.0005 ether}(params);
         SplitToken token = SplitToken(tokenAddress);
         require(factory.launchedToken(tokenAddress), "NOT_LAUNCHED");
         require(vault.positionLiquidity(poolId) != 0, "NO_SEED_POSITION");
@@ -1032,9 +1256,9 @@ contract SplitProtocolTest is IUnlockCallback {
         params.community = address(communityB);
         params.creatorBps = 0;
         params.liquidityBps = 0;
-        params.treasuryBps = 0;
+        params.projectTreasuryBps = 0;
         params.communityBps = 10_000;
-        (address tokenAddressB, PoolId poolIdB) = factory.launch{value: 1 ether}(params);
+        (address tokenAddressB, PoolId poolIdB) = factory.launch{value: 1.0005 ether}(params);
         SplitToken tokenB = SplitToken(tokenAddressB);
         PoolKey memory keyB = PoolKey({
             currency0: Currency.wrap(address(0)),
@@ -1050,19 +1274,22 @@ contract SplitProtocolTest is IUnlockCallback {
         uint256 feeB = hook.accrued(poolIdB, keyB.currency1);
         require(fee > 0 && feeB > 0, "NO_FEE_ACCRUED");
         hook.flush(poolId, key.currency1);
-        uint256 creatorShare = fee * 4_000 / 10_000;
-        uint256 treasuryShare = fee * 2_000 / 10_000;
-        uint256 communityShare = fee * 1_000 / 10_000;
-        uint256 liquidityShare = fee - creatorShare - treasuryShare - communityShare;
+        uint256 projectFee = fee - fee / 10;
+        uint256 creatorShare = projectFee * 4_000 / 10_000;
+        uint256 treasuryShare = projectFee * 2_000 / 10_000;
+        uint256 communityShare = projectFee * 1_000 / 10_000;
+        uint256 liquidityShare = projectFee - creatorShare - treasuryShare - communityShare;
         require(router.claimable(poolId, address(this), key.currency1) == creatorShare, "CREATOR_SPLIT");
         require(router.claimable(poolId, address(treasury), key.currency1) == treasuryShare, "TREASURY_SPLIT");
         require(router.claimable(poolId, address(community), key.currency1) == communityShare, "COMMUNITY_SPLIT");
         require(vault.pendingLiquidity(poolId, key.currency1) == liquidityShare, "LIQUIDITY_SPLIT");
+        require(router.protocolClaimable(poolId, key.currency1) == fee / 10, "PROTOCOL_SPLIT");
         (address configuredCreator,,,,,,,) = router.splits(poolId);
         require(configuredCreator == address(this), "CONFIG_NOT_CREATOR");
         hook.flush(poolIdB, keyB.currency1);
         require(
-            router.claimable(poolIdB, address(communityB), keyB.currency1) == feeB, "PROJECT_B_DID_NOT_RECEIVE_ITS_FEE"
+            router.claimable(poolIdB, address(communityB), keyB.currency1) == (feeB - feeB / 10),
+            "PROJECT_B_DID_NOT_RECEIVE_ITS_FEE"
         );
         require(
             token.balanceOf(address(communityB)) == 0 && tokenB.balanceOf(address(community)) == 0,
@@ -1085,33 +1312,112 @@ contract SplitProtocolTest is IUnlockCallback {
             return;
         }
         vm.createSelectFork(rpcUrl, forkBlock);
+        require(forkBlock == 73_152_779, "UNEXPECTED_FORK_BLOCK");
         require(block.chainid == 4663, "NOT_RH_MAINNET_FORK");
 
         IPoolManager manager = IPoolManager(0x8366a39CC670B4001A1121B8F6A443A643e40951);
         require(address(manager).code.length != 0, "OFFICIAL_POOL_MANAGER_MISSING");
-        NativeReceiver treasury = new NativeReceiver();
+        require(
+            keccak256(address(manager).code) == 0xbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e95626,
+            "POOL_MANAGER_CODE_HASH_MISMATCH"
+        );
+        bytes32 managerStorageWord = vm.load(address(manager), bytes32(0));
+        require(managerStorageWord == vm.load(address(manager), bytes32(0)), "POOL_MANAGER_HISTORICAL_STORAGE_FAILED");
+        (bool poolManagerCallSucceeded,) =
+            address(manager).staticcall(abi.encodeWithSignature("extsload(bytes32)", bytes32(0)));
+        require(poolManagerCallSucceeded, "POOL_MANAGER_HISTORICAL_CALL_FAILED");
+        NativeReceiver protocolTreasury = new NativeReceiver();
+        NativeReceiver projectTreasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
-        SplitStackDeployer deployer = new SplitStackDeployer();
+        // Match DeploySplit's deterministic simulated sender and nonce so this fork
+        // lifecycle deploys the same production stack addresses as the script dry-run.
+        vm.prank(0x000000000000000000000000000000000000dEaD);
+        ProductionSplitStackDeployer deployer = new ProductionSplitStackDeployer();
+        require(address(deployer) == 0x9B137463d4E7986D7f535f9B79e28b4EF1938E9b, "SCRIPT_DEPLOYER_ADDRESS_MISMATCH");
+        bytes32 hookSalt = _findProductionHookSalt(manager, address(deployer));
         (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault) =
-            deployer.deploy(manager, address(treasury));
+            deployer.deploy(manager, address(protocolTreasury), hookSalt);
+        require(factory.protocolTreasury() == address(protocolTreasury), "FACTORY_PROTOCOL_TREASURY_MISMATCH");
+        require(router.protocolTreasury() == address(protocolTreasury), "ROUTER_PROTOCOL_TREASURY_MISMATCH");
         forkRouter = router;
         forkVault = vault;
 
-        vm.deal(address(this), 3 ether);
+        vm.deal(address(this), 10 ether);
         SplitFactory.LaunchParams memory params = SplitFactory.LaunchParams({
             name: "SPLIT RH Fork Test",
             symbol: "RHFORK",
             tokenSeedAmount: 1 ether,
-            creatorBps: 10_000,
-            liquidityBps: 0,
-            treasuryBps: 0,
-            communityBps: 0,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 4_000,
+            liquidityBps: 3_000,
+            projectTreasuryBps: 2_000,
+            communityBps: 1_000,
+            projectTreasury: address(projectTreasury),
             community: address(community),
             salt: keccak256("rh-mainnet-pinned-fork")
         });
-        (address tokenAddress, PoolId poolId) = factory.launch{value: 1 ether}(params);
+        uint256 creatorEthBeforeLaunch = address(this).balance;
+        uint256 managerEthBeforeLaunch = address(manager).balance;
+        (address tokenAddress, PoolId poolId) = factory.launch{value: 1.0007 ether}(params);
+        uint256 seededQuote = address(manager).balance - managerEthBeforeLaunch;
+        require(
+            creatorEthBeforeLaunch - address(this).balance == factory.LAUNCH_FEE() + seededQuote,
+            "EXCESS_REFUND_MISMATCH"
+        );
+        require(router.protocolLaunchFeesAccrued() == factory.LAUNCH_FEE(), "LAUNCH_FEE_NOT_ACCRUED");
+        require(address(router).balance == factory.LAUNCH_FEE(), "LAUNCH_FEE_NOT_SEPARATE_FROM_SEED");
+        require(address(factory).balance == 0, "FACTORY_RETAINED_LAUNCH_VALUE");
+        require(seededQuote <= params.seedQuoteAmount && seededQuote > 0, "SEED_QUOTE_NOT_VAULTED");
         require(hook.registeredPool(poolId), "POOL_NOT_REGISTERED");
         require(vault.positionLiquidity(poolId) != 0, "FORK_SEED_POSITION_MISSING");
+        SplitToken launchedToken = SplitToken(tokenAddress);
+        require(launchedToken.totalSupply() == factory.TOTAL_SUPPLY(), "FORK_SUPPLY_MISMATCH");
+        require(launchedToken.balanceOf(address(manager)) != 0, "SEEDED_TOKEN_NOT_IN_POOL_MANAGER");
+        require(
+            launchedToken.balanceOf(address(this)) == factory.TOTAL_SUPPLY() - params.tokenSeedAmount,
+            "CREATOR_SUPPLY_MISMATCH"
+        );
+        (bool mintSucceeded,) = tokenAddress.call(abi.encodeWithSignature("mint(address,uint256)", address(this), 1));
+        require(!mintSucceeded, "POST_LAUNCH_MINT_AVAILABLE");
+        require(
+            address(this) != address(protocolTreasury) && address(this) != address(community), "RECIPIENTS_NOT_DISTINCT"
+        );
+        require(address(projectTreasury) != address(protocolTreasury), "PROTOCOL_AND_PROJECT_TREASURY_NOT_DISTINCT");
+        require(address(projectTreasury) != address(community), "RECIPIENTS_NOT_DISTINCT");
+        (
+            address configuredCreator,
+            address configuredProjectTreasury,
+            address configuredCommunity,
+            uint16 creatorBps,
+            uint16 liquidityBps,
+            uint16 projectTreasuryBps,
+            uint16 communityBps,
+            bool configured
+        ) = router.splits(poolId);
+        require(
+            configured && configuredCreator == address(this) && configuredProjectTreasury == address(projectTreasury)
+                && configuredCommunity == address(community) && creatorBps == 4_000 && liquidityBps == 3_000
+                && projectTreasuryBps == 2_000 && communityBps == 1_000,
+            "FORK_SPLIT_CONFIGURATION_MISMATCH"
+        );
+        vm.prank(address(factory));
+        (bool reconfigureSucceeded,) = address(router)
+            .call(
+                abi.encodeCall(
+                    router.configure,
+                    (
+                        poolId,
+                        address(this),
+                        address(projectTreasury),
+                        address(community),
+                        uint16(3_000),
+                        uint16(4_000),
+                        uint16(2_000),
+                        uint16(1_000)
+                    )
+                )
+            );
+        require(!reconfigureSucceeded, "FORK_SPLIT_RECONFIGURED");
 
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(address(0)),
@@ -1124,6 +1430,354 @@ contract SplitProtocolTest is IUnlockCallback {
         _runObservedForkSwap(manager, hook, key, poolId, true, int256(1e15), key.currency0);
         _runObservedForkSwap(manager, hook, key, poolId, false, -int256(1e15), key.currency0);
         _runObservedForkSwap(manager, hook, key, poolId, false, int256(1e15), key.currency1);
+
+        _verifyForkPositionCustody(manager, vault, deployer, key, poolId, params.salt);
+        require(vault.pendingLiquidity(poolId, key.currency0) != 0, "NATIVE_LIQUIDITY_NOT_CREDITED");
+        require(vault.pendingLiquidity(poolId, key.currency1) != 0, "TOKEN_LIQUIDITY_NOT_CREDITED");
+        _claimForkAllocations(router, protocolTreasury, projectTreasury, community, tokenAddress, poolId);
+
+        // A successful launch fee is rolled back if a later refund fails, even
+        // though the fee was first credited to the router's pull-claim ledger.
+        AdversarialReceiver rejectingCreator = new AdversarialReceiver(address(this));
+        rejectingCreator.permanentlyRejectNative();
+        SplitFactory.LaunchParams memory failedParams = params;
+        failedParams.name = "SPLIT RH Failed Refund";
+        failedParams.symbol = "RHFAIL";
+        failedParams.salt = keccak256("rh-mainnet-failed-refund");
+        uint256 feeLedgerBeforeFailure = router.protocolLaunchFeesAccrued();
+        uint256 vaultBalanceBeforeFailure = address(vault).balance;
+        (bool insufficientLaunch,) =
+            address(factory).call{value: 1.0004 ether}(abi.encodeCall(factory.launch, (failedParams)));
+        require(!insufficientLaunch, "INSUFFICIENT_LAUNCH_PAYMENT_SUCCEEDED");
+        require(router.protocolLaunchFeesAccrued() == feeLedgerBeforeFailure, "INSUFFICIENT_LAUNCH_CHARGED_FEE");
+        (bool failedLaunch,) = address(rejectingCreator).call{value: 1.0007 ether}(
+            abi.encodeCall(rejectingCreator.execute, (address(factory), abi.encodeCall(factory.launch, (failedParams))))
+        );
+        require(!failedLaunch, "REJECTED_REFUND_LAUNCH_SUCCEEDED");
+        require(router.protocolLaunchFeesAccrued() == feeLedgerBeforeFailure, "FAILED_LAUNCH_RETAINED_FEE");
+        require(address(vault).balance == vaultBalanceBeforeFailure, "FAILED_LAUNCH_RETAINED_SEED");
+
+        // A zero-percent Project Treasury is valid; the global protocol share
+        // remains fixed while all of the programmable portion goes to Creator.
+        SplitFactory.LaunchParams memory zeroProjectTreasuryParams = SplitFactory.LaunchParams({
+            name: "SPLIT RH Zero Project Treasury",
+            symbol: "RHZERO",
+            tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 10_000,
+            liquidityBps: 0,
+            projectTreasuryBps: 0,
+            communityBps: 0,
+            projectTreasury: address(0),
+            community: address(community),
+            salt: keccak256("rh-mainnet-zero-project-treasury")
+        });
+        (address zeroTreasuryToken, PoolId zeroTreasuryPool) =
+            factory.launch{value: 1.0005 ether}(zeroProjectTreasuryParams);
+        PoolKey memory zeroTreasuryKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(zeroTreasuryToken),
+            fee: factory.LP_FEE(),
+            tickSpacing: factory.TICK_SPACING(),
+            hooks: IHooks(address(hook))
+        });
+        _runObservedForkSwap(
+            manager, hook, zeroTreasuryKey, zeroTreasuryPool, true, -int256(1e15), zeroTreasuryKey.currency1
+        );
+        uint256 zeroProjectProtocolAmount = router.protocolClaimable(zeroTreasuryPool, zeroTreasuryKey.currency1);
+        uint256 zeroProjectCreatorAmount = router.claimable(zeroTreasuryPool, address(this), zeroTreasuryKey.currency1);
+        require(zeroProjectProtocolAmount != 0, "ZERO_PROJECT_TREASURY_REMOVED_PROTOCOL_SHARE");
+        require(zeroProjectCreatorAmount != 0, "ZERO_PROJECT_TREASURY_CREATOR_SHARE_MISSING");
+        require(
+            router.claimable(zeroTreasuryPool, address(projectTreasury), zeroTreasuryKey.currency1) == 0,
+            "ZERO_PROJECT_TREASURY_NOT_ZERO"
+        );
+        require(
+            vault.pendingLiquidity(zeroTreasuryPool, zeroTreasuryKey.currency1) == 0, "ZERO_LIQUIDITY_SHARE_NOT_ZERO"
+        );
+        uint256 protocolTokenBefore = SplitToken(zeroTreasuryToken).balanceOf(address(protocolTreasury));
+        protocolTreasury.claimProtocol(router, zeroTreasuryPool, zeroTreasuryKey.currency1);
+        require(
+            SplitToken(zeroTreasuryToken).balanceOf(address(protocolTreasury)) - protocolTokenBefore
+                == zeroProjectProtocolAmount,
+            "ZERO_PROJECT_PROTOCOL_CLAIM_DELTA"
+        );
+        router.claim(zeroTreasuryPool, zeroTreasuryKey.currency1);
+        require(
+            router.claimable(zeroTreasuryPool, address(this), zeroTreasuryKey.currency1) == 0,
+            "ZERO_PROJECT_CREATOR_CLAIM_FAILED"
+        );
+
+        // A rejecting per-project treasury cannot block the protocol, creator,
+        // community, liquidity credit, or another pool.
+        RevertingReceiver rejectingProjectTreasury = new RevertingReceiver();
+        SplitFactory.LaunchParams memory rejectParams = SplitFactory.LaunchParams({
+            name: "SPLIT RH Reject Project Treasury",
+            symbol: "RHTREJ",
+            tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 4_000,
+            liquidityBps: 3_000,
+            projectTreasuryBps: 2_000,
+            communityBps: 1_000,
+            projectTreasury: address(rejectingProjectTreasury),
+            community: address(community),
+            salt: keccak256("rh-mainnet-reverting-recipient")
+        });
+        (address rejectTokenAddress, PoolId rejectPoolId) = factory.launch{value: 1.0005 ether}(rejectParams);
+        PoolKey memory rejectKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(rejectTokenAddress),
+            fee: factory.LP_FEE(),
+            tickSpacing: factory.TICK_SPACING(),
+            hooks: IHooks(address(hook))
+        });
+        _runObservedForkSwap(manager, hook, rejectKey, rejectPoolId, true, int256(1e15), rejectKey.currency0);
+        uint256 rejectedAmount = router.claimable(rejectPoolId, address(rejectingProjectTreasury), rejectKey.currency0);
+        require(rejectedAmount != 0, "REJECT_RECIPIENT_NOT_CLAIMABLE");
+        uint256 rejectedGasBefore = gasleft();
+        (bool rejectSucceeded,) = address(rejectingProjectTreasury)
+            .call(abi.encodeCall(rejectingProjectTreasury.claim, (router, rejectPoolId, rejectKey.currency0)));
+        uint256 rejectedGasUsed = rejectedGasBefore - gasleft();
+        emit ForkRejectedClaimGas(
+            address(rejectingProjectTreasury), Currency.unwrap(rejectKey.currency0), rejectedAmount, rejectedGasUsed
+        );
+        require(!rejectSucceeded, "REJECTING_PROJECT_TREASURY_CLAIM_SUCCEEDED");
+        require(
+            router.claimable(rejectPoolId, address(rejectingProjectTreasury), rejectKey.currency0) == rejectedAmount,
+            "REJECTED_CLAIM_BALANCE_LOST"
+        );
+        uint256 creatorClaim = router.claimable(rejectPoolId, address(this), rejectKey.currency0);
+        uint256 communityClaim = router.claimable(rejectPoolId, address(community), rejectKey.currency0);
+        uint256 protocolClaim = router.protocolClaimable(rejectPoolId, rejectKey.currency0);
+        require(creatorClaim != 0 && communityClaim != 0 && protocolClaim != 0, "OTHER_REJECT_POOL_CLAIMS_MISSING");
+        router.claim(rejectPoolId, rejectKey.currency0);
+        community.claim(router, rejectPoolId, rejectKey.currency0);
+        protocolTreasury.claimProtocol(router, rejectPoolId, rejectKey.currency0);
+        require(router.claimable(rejectPoolId, address(this), rejectKey.currency0) == 0, "REJECT_BLOCKED_CREATOR");
+        require(
+            router.claimable(rejectPoolId, address(community), rejectKey.currency0) == 0, "REJECT_BLOCKED_COMMUNITY"
+        );
+        require(router.protocolClaimable(rejectPoolId, rejectKey.currency0) == 0, "REJECT_BLOCKED_PROTOCOL");
+
+        uint256 launchFeesBeforeClaim = router.protocolLaunchFeesAccrued();
+        require(launchFeesBeforeClaim == factory.LAUNCH_FEE() * 3, "SUCCESSFUL_LAUNCH_FEE_TOTAL_WRONG");
+        uint256 protocolEthBeforeLaunchClaim = address(protocolTreasury).balance;
+        protocolTreasury.claimProtocolLaunchFees(router);
+        require(
+            address(protocolTreasury).balance - protocolEthBeforeLaunchClaim == launchFeesBeforeClaim,
+            "LAUNCH_FEE_CLAIM_DELTA"
+        );
+        require(router.protocolLaunchFeesAccrued() == 0, "LAUNCH_FEE_LEDGER_NOT_CLEARED");
+    }
+
+    function _findProductionHookSalt(IPoolManager manager, address deployer) private pure returns (bytes32 salt) {
+        address routerAddress = _predictedCreateAddress(deployer, 2);
+        address factoryAddress = _predictedCreateAddress(deployer, 4);
+        bytes memory hookCode = abi.encodePacked(
+            type(SplitHook).creationCode, abi.encode(manager, factoryAddress, SplitFeeRouter(payable(routerAddress)))
+        );
+        bytes32 initCodeHash = keccak256(hookCode);
+        for (uint256 nonce; nonce < type(uint256).max; ++nonce) {
+            salt = bytes32(nonce);
+            address predicted =
+                address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash)))));
+            if (uint160(predicted) & 0x3fff == 0x44) return salt;
+        }
+        revert("HOOK_SALT_NOT_FOUND");
+    }
+
+    function _predictedCreateAddress(address deployer, uint8 nonce) private pure returns (address) {
+        return address(uint160(uint256(keccak256(abi.encodePacked(hex"d694", deployer, bytes1(nonce))))));
+    }
+
+    function _verifyForkPositionCustody(
+        IPoolManager manager,
+        SplitLiquidityVault vault,
+        ProductionSplitStackDeployer deployer,
+        PoolKey memory key,
+        PoolId poolId,
+        bytes32 salt
+    ) private {
+        uint128 vaultLiquidity = vault.positionLiquidity(poolId);
+        bytes32 positionKey = Position.calculatePositionKey(address(vault), -887220, 887220, salt);
+        require(vaultLiquidity != 0, "VAULT_POSITION_MISSING");
+        require(
+            StateLibrary.getPositionLiquidity(manager, poolId, positionKey) == vaultLiquidity,
+            "POOL_MANAGER_POSITION_OWNER_MISMATCH"
+        );
+        activeManager = manager;
+        activeRemovalAttempt = true;
+        (bool creatorRemoved,) = address(manager)
+            .call(
+                abi.encodeWithSelector(manager.unlock.selector, abi.encode(key, -887220, 887220, salt, vaultLiquidity))
+            );
+        activeRemovalAttempt = false;
+        require(!creatorRemoved, "CREATOR_REMOVED_VAULT_POSITION");
+        PositionStealer arbitraryAttempt = new PositionStealer(manager);
+        require(
+            !arbitraryAttempt.attemptRemoval(key, -887220, 887220, salt, vaultLiquidity),
+            "ARBITRARY_REMOVED_VAULT_POSITION"
+        );
+        vm.prank(address(deployer));
+        (bool deployerRemoved,) = address(manager)
+            .call(
+                abi.encodeWithSelector(manager.unlock.selector, abi.encode(key, -887220, 887220, salt, vaultLiquidity))
+            );
+        require(!deployerRemoved, "DEPLOYER_REMOVED_VAULT_POSITION");
+        (bool removed,) =
+            address(vault).call(abi.encodeWithSignature("removeLiquidity(bytes32,uint256)", PoolId.unwrap(poolId), 1));
+        require(!removed, "VAULT_WITHDRAW_PATH_EXISTS");
+        bytes4[4] memory unavailableSelectors = [
+            bytes4(keccak256("withdraw(bytes32,address,uint256)")),
+            bytes4(keccak256("transferPosition(bytes32,address)")),
+            bytes4(keccak256("approve(address,uint256)")),
+            bytes4(keccak256("rescueToken(address,address,uint256)"))
+        ];
+        for (uint256 i; i < unavailableSelectors.length; ++i) {
+            vm.prank(address(deployer));
+            (bool deployerCallSucceeded,) =
+                address(vault).call(abi.encodeWithSelector(unavailableSelectors[i], address(0xBEEF), 1));
+            require(!deployerCallSucceeded, "DEPLOYER_VAULT_CUSTODY_PATH");
+            (bool arbitraryCallSucceeded,) =
+                address(vault).call(abi.encodeWithSelector(unavailableSelectors[i], address(0xBEEF), 1));
+            require(!arbitraryCallSucceeded, "ARBITRARY_VAULT_CUSTODY_PATH");
+        }
+        require(
+            StateLibrary.getPositionLiquidity(manager, poolId, positionKey) == vaultLiquidity,
+            "POSITION_CHANGED_AFTER_ATTACKS"
+        );
+    }
+
+    function _claimForkAllocations(
+        SplitFeeRouter router,
+        NativeReceiver protocolTreasury,
+        NativeReceiver projectTreasury,
+        NativeReceiver community,
+        address tokenAddress,
+        PoolId poolId
+    ) private {
+        Currency[2] memory currencies = [Currency.wrap(address(0)), Currency.wrap(tokenAddress)];
+        for (uint256 i; i < currencies.length; ++i) {
+            Currency currency = currencies[i];
+            uint256 creatorClaimable = router.claimable(poolId, address(this), currency);
+            vm.prank(address(0xA11CE));
+            (bool unauthorizedSucceeded,) = address(router).call(abi.encodeCall(router.claim, (poolId, currency)));
+            require(!unauthorizedSucceeded, "UNAUTHORIZED_CLAIM_SUCCEEDED");
+            require(
+                router.claimable(poolId, address(this), currency) == creatorClaimable,
+                "UNAUTHORIZED_CLAIM_CHANGED_BALANCE"
+            );
+            vm.prank(address(0xA11CE));
+            (bool unauthorizedProtocolSucceeded,) =
+                address(router).call(abi.encodeCall(router.claimProtocolFees, (poolId, currency)));
+            require(!unauthorizedProtocolSucceeded, "UNAUTHORIZED_PROTOCOL_CLAIM_SUCCEEDED");
+            _measureForkClaim(router, address(projectTreasury), poolId, currency, true, projectTreasury, tokenAddress);
+            _measureForkClaim(router, address(community), poolId, currency, true, community, tokenAddress);
+            _measureForkClaim(router, address(this), poolId, currency, false, projectTreasury, tokenAddress);
+            _measureForkProtocolClaim(router, protocolTreasury, poolId, currency, tokenAddress);
+        }
+    }
+
+    function _measureForkProtocolClaim(
+        SplitFeeRouter router,
+        NativeReceiver protocolTreasury,
+        PoolId poolId,
+        Currency currency,
+        address tokenAddress
+    ) private {
+        uint256 amount = router.protocolClaimable(poolId, currency);
+        require(amount != 0, "FORK_PROTOCOL_CLAIMABLE_MISSING");
+        uint256 recipientBefore = _currencyBalance(address(protocolTreasury), currency, tokenAddress);
+        uint256 gasBefore = gasleft();
+        protocolTreasury.claimProtocol(router, poolId, currency);
+        uint256 gasUsed = gasBefore - gasleft();
+        uint256 recipientAfter = _currencyBalance(address(protocolTreasury), currency, tokenAddress);
+        require(recipientAfter - recipientBefore == amount, "FORK_PROTOCOL_CLAIM_DELTA_MISMATCH");
+        require(router.protocolClaimable(poolId, currency) == 0, "FORK_PROTOCOL_CLAIMABLE_NOT_CLEARED");
+        (bool doubleClaimSucceeded,) =
+            address(protocolTreasury).call(abi.encodeCall(protocolTreasury.claimProtocol, (router, poolId, currency)));
+        require(!doubleClaimSucceeded, "FORK_PROTOCOL_DOUBLE_CLAIM_SUCCEEDED");
+        emit ForkClaimGas(
+            address(protocolTreasury),
+            Currency.unwrap(currency),
+            amount,
+            amount,
+            recipientBefore,
+            gasUsed,
+            0,
+            recipientAfter
+        );
+    }
+
+    function _measureForkClaim(
+        SplitFeeRouter router,
+        address recipient,
+        PoolId poolId,
+        Currency currency,
+        bool viaReceiver,
+        NativeReceiver receiver,
+        address tokenAddress
+    ) private {
+        uint256 amount = router.claimable(poolId, recipient, currency);
+        require(amount != 0, "FORK_CLAIMABLE_MISSING");
+        uint256 recipientBefore = _currencyBalance(recipient, currency, tokenAddress);
+        (address creator, address projectTreasury, address community,,,,,) = router.splits(poolId);
+        address[3] memory recipients = [creator, projectTreasury, community];
+        uint256[3] memory otherClaimsBefore;
+        uint256[3] memory currentBalancesBefore;
+        uint256[3] memory otherCurrencyBalancesBefore;
+        Currency otherCurrency =
+            Currency.unwrap(currency) == address(0) ? Currency.wrap(tokenAddress) : Currency.wrap(address(0));
+        for (uint256 i; i < recipients.length; ++i) {
+            if (recipients[i] != recipient) {
+                otherClaimsBefore[i] = router.claimable(poolId, recipients[i], currency);
+                currentBalancesBefore[i] = _currencyBalance(recipients[i], currency, tokenAddress);
+            }
+            otherCurrencyBalancesBefore[i] = _currencyBalance(recipients[i], otherCurrency, tokenAddress);
+        }
+        uint256 gasBefore = gasleft();
+        if (viaReceiver) receiver.claim(router, poolId, currency);
+        else router.claim(poolId, currency);
+        uint256 gasUsed = gasBefore - gasleft();
+        uint256 recipientAfter = _currencyBalance(recipient, currency, tokenAddress);
+        uint256 claimableAfter = router.claimable(poolId, recipient, currency);
+        require(recipientAfter - recipientBefore == amount, "FORK_CLAIM_DELTA_MISMATCH");
+        require(claimableAfter == 0, "FORK_CLAIMABLE_NOT_CLEARED");
+        vm.prank(recipient);
+        (bool doubleClaimSucceeded,) = address(router).call(abi.encodeCall(router.claim, (poolId, currency)));
+        require(!doubleClaimSucceeded, "FORK_DOUBLE_CLAIM_SUCCEEDED");
+        for (uint256 i; i < recipients.length; ++i) {
+            if (recipients[i] != recipient) {
+                require(
+                    router.claimable(poolId, recipients[i], currency) == otherClaimsBefore[i],
+                    "FORK_OTHER_CLAIMABLE_CHANGED"
+                );
+                require(
+                    _currencyBalance(recipients[i], currency, tokenAddress) == currentBalancesBefore[i],
+                    "FORK_OTHER_RECIPIENT_BALANCE_CHANGED"
+                );
+            }
+            require(
+                _currencyBalance(recipients[i], otherCurrency, tokenAddress) == otherCurrencyBalancesBefore[i],
+                "FORK_UNRELATED_CURRENCY_CHANGED"
+            );
+        }
+        emit ForkClaimGas(
+            recipient,
+            Currency.unwrap(currency),
+            amount,
+            amount,
+            recipientBefore,
+            gasUsed,
+            claimableAfter,
+            recipientAfter
+        );
+    }
+
+    function _currencyBalance(address account, Currency currency, address tokenAddress) private view returns (uint256) {
+        if (Currency.unwrap(currency) == address(0)) return account.balance;
+        return SplitToken(tokenAddress).balanceOf(account);
     }
 
     /// @dev Captures the actual trader balance deltas around PoolManager.swap, derives the
@@ -1202,20 +1856,73 @@ contract SplitProtocolTest is IUnlockCallback {
             ? address(router).balance
             : SplitToken(Currency.unwrap(key.currency1)).balanceOf(address(router));
         uint256 allocationsBefore = router.totalRecipientAllocated(poolId, currency);
+        uint256 protocolBefore = router.totalProtocolAllocated(poolId, currency);
         uint256 liquidityBefore = vault.pendingLiquidity(poolId, currency);
+        uint256 creatorBefore = router.claimable(poolId, address(this), currency);
+        (
+            address creator,
+            address projectTreasury,
+            address community,
+            uint16 creatorBps,
+            uint16 liquidityBps,
+            uint16 projectTreasuryBps,
+            uint16 communityBps,
+        ) = router.splits(poolId);
+        require(creator == address(this), "FORK_CREATOR_MISMATCH");
+        uint256 projectTreasuryBefore = router.claimable(poolId, projectTreasury, currency);
+        uint256 communityBefore = router.claimable(poolId, community, currency);
+        uint256 protocolClaimBefore = router.protocolClaimable(poolId, currency);
         hook.flush(poolId, currency);
         uint256 routerBalanceAfter = currency == key.currency0
             ? address(router).balance
             : SplitToken(Currency.unwrap(key.currency1)).balanceOf(address(router));
         uint256 recipientAllocation = router.totalRecipientAllocated(poolId, currency) - allocationsBefore;
         uint256 liquidityCredit = vault.pendingLiquidity(poolId, currency) - liquidityBefore;
-        require(routerBalanceAfter - routerBalanceBefore == recipientAllocation, "FORK_CLAIM_BACKING_MISMATCH");
-        require(recipientAllocation + liquidityCredit == fee, "FORK_ROUTING_NOT_CONSERVED");
+        require(
+            router.claimable(poolId, address(this), currency) - creatorBefore == (fee - fee / 10) * creatorBps / 10_000,
+            "FORK_CREATOR_SPLIT"
+        );
+        require(
+            router.claimable(poolId, projectTreasury, currency) - projectTreasuryBefore
+                == (fee - fee / 10) * projectTreasuryBps / 10_000,
+            "FORK_PROJECT_TREASURY_SPLIT"
+        );
+        require(
+            router.claimable(poolId, community, currency) - communityBefore == (fee - fee / 10) * communityBps / 10_000,
+            "FORK_COMMUNITY_SPLIT"
+        );
+        uint256 protocolAllocation = router.totalProtocolAllocated(poolId, currency) - protocolBefore;
+        require(protocolAllocation == fee / 10, "FORK_PROTOCOL_SPLIT");
+        require(
+            router.protocolClaimable(poolId, currency) - protocolClaimBefore == protocolAllocation,
+            "FORK_PROTOCOL_CLAIMABLE"
+        );
+        uint256 projectAmount = fee - fee / 10;
+        require(
+            liquidityCredit
+                == projectAmount - projectAmount * creatorBps / 10_000 - projectAmount * projectTreasuryBps / 10_000
+                    - projectAmount * communityBps / 10_000,
+            "FORK_LIQUIDITY_SPLIT"
+        );
+        require(liquidityCredit >= projectAmount * liquidityBps / 10_000, "FORK_LIQUIDITY_BPS_MISMATCH");
+        require(
+            routerBalanceAfter - routerBalanceBefore == recipientAllocation + protocolAllocation,
+            "FORK_CLAIM_BACKING_MISMATCH"
+        );
+        require(recipientAllocation + liquidityCredit + protocolAllocation == fee, "FORK_ROUTING_NOT_CONSERVED");
         require(hook.accrued(poolId, currency) == 0, "FORK_ACCRUAL_NOT_SETTLED");
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
         require(msg.sender == address(activeManager), "UNEXPECTED_UNLOCK");
+        if (activeRemovalAttempt) {
+            (PoolKey memory removalKey, int24 tickLower, int24 tickUpper, bytes32 salt, uint128 liquidity) =
+                abi.decode(data, (PoolKey, int24, int24, bytes32, uint128));
+            activeManager.modifyLiquidity(
+                removalKey, ModifyLiquidityParams(tickLower, tickUpper, -int256(uint256(liquidity)), salt), ""
+            );
+            return "";
+        }
         (PoolKey memory key, int256 amountSpecified) = abi.decode(data, (PoolKey, int256));
         SwapParams memory params = SwapParams({
             zeroForOne: activeZeroForOne,
@@ -1313,7 +2020,9 @@ contract SplitAccountingHandler {
         treasury = new NativeReceiver();
         community = new NativeReceiver();
         vault = new MockLiquidityVault();
-        router = new SplitFeeRouter(address(this), address(this), SplitLiquidityVault(payable(address(vault))));
+        router = new SplitFeeRouter(
+            address(this), address(this), SplitLiquidityVault(payable(address(vault))), address(this)
+        );
         poolId = PoolId.wrap(keccak256("split-router-invariant"));
         router.configure(poolId, address(creator), address(treasury), address(community), 4_000, 3_000, 2_000, 1_000);
     }
@@ -1360,8 +2069,8 @@ contract SplitAccountingInvariant {
         SplitFeeRouter router = handler.router();
         PoolId poolId = handler.poolId();
         Currency currency = Currency.wrap(address(0));
-        uint256 processed =
-            router.totalRecipientAllocated(poolId, currency) + handler.vault().pendingLiquidity(poolId, currency);
+        uint256 processed = router.totalRecipientAllocated(poolId, currency)
+            + handler.vault().pendingLiquidity(poolId, currency) + router.totalProtocolAllocated(poolId, currency);
         require(handler.totalAccrued() == processed + handler.currentAccrual(), "ACCRUED_VALUE_CREATED_OR_LOST");
     }
 
@@ -1376,6 +2085,11 @@ contract SplitAccountingInvariant {
             router.totalRecipientAllocated(poolId, currency)
                 == router.totalRecipientClaimed(poolId, currency) + claimableTotal,
             "RECIPIENT_ACCOUNTING_MISMATCH"
+        );
+        require(
+            router.totalProtocolAllocated(poolId, currency)
+                == router.totalProtocolClaimed(poolId, currency) + router.protocolClaimable(poolId, currency),
+            "PROTOCOL_ACCOUNTING_MISMATCH"
         );
     }
 

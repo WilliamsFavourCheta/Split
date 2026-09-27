@@ -18,7 +18,7 @@ contract SplitStackDeployer {
 
     event StackDeployed(address factory, address hook, address router, address vault, address poolManager);
 
-    function deploy(IPoolManager manager, address treasury, bytes32 salt)
+    function deploy(IPoolManager manager, address protocolTreasury, bytes32 salt)
         public
         returns (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault)
     {
@@ -35,14 +35,14 @@ contract SplitStackDeployer {
         if (uint160(hookAddress) & HOOK_MASK != HOOK_FLAGS) revert InvalidHookSalt();
 
         vault = new SplitLiquidityVault(factoryAddress, routerAddress, manager);
-        router = new SplitFeeRouter(factoryAddress, hookAddress, vault);
+        router = new SplitFeeRouter(factoryAddress, hookAddress, vault, protocolTreasury);
         address deployedHook;
         assembly ("memory-safe") {
             deployedHook := create2(0, add(hookCode, 0x20), mload(hookCode), salt)
         }
         if (deployedHook != hookAddress || deployedHook.code.length == 0) revert HookDeploymentFailed();
         hook = SplitHook(payable(deployedHook));
-        factory = new SplitFactory(manager, hook, router, vault, treasury);
+        factory = new SplitFactory(manager, hook, router, vault, protocolTreasury);
         if (
             address(vault) != vaultAddress || address(router) != routerAddress || address(factory) != factoryAddress
                 || uint160(address(hook)) & HOOK_MASK != HOOK_FLAGS

@@ -10,6 +10,8 @@ import {
   upsertFeeConfiguration,
   upsertLaunch,
   upsertLiquidityCredit,
+  upsertProtocolClaimEvent,
+  upsertProtocolLaunchFee,
 } from "./repository";
 import type { SplitIndexerEvent } from "./types";
 import { createIndexerSupabaseClient } from "../supabase/server";
@@ -43,11 +45,16 @@ async function applyEvent(event: SplitIndexerEvent, tokens: Map<string, string>)
     tokens.set(event.poolId.toLowerCase(), event.tokenAddress.toLowerCase());
     return projectId;
   }
+  if (event.type === "LaunchProtocolFeeCharged") {
+    await upsertProtocolLaunchFee(event);
+    return undefined;
+  }
   const token = await tokenForPool(event.poolId, tokens);
   if (event.type === "SplitConfigured") await upsertFeeConfiguration(event, token);
   else if (event.type === "FeesAccrued") await upsertAccrual(event, token);
   else if (event.type === "FeesAllocated") await upsertAllocationEvent(event, token);
   else if (event.type === "FeesClaimed") await upsertClaimEvent(event, token);
+  else if (event.type === "ProtocolFeesClaimed") await upsertProtocolClaimEvent(event, token);
   else await upsertLiquidityCredit(event, token);
   return undefined;
 }

@@ -1,4 +1,4 @@
-import "server-only";
+﻿import "server-only";
 import { isSupabaseConfigured, createServerSupabaseClient } from "../supabase/server";
 import type { DestinationType, ProjectStatus } from "../supabase/database.types";
 import { DEFAULT_SPLIT, type Allocation, type Token } from "../../data/mock";
@@ -13,6 +13,8 @@ const normalizeAddress = (value: string) => value.trim().toLowerCase();
 const isProtocolIndexMigrationMissing = (message: string) =>
   /column .*?(pool_id|canonical|gross_amount_raw|block_hash).* does not exist/i.test(message)
   || /schema cache.*(pool_id|canonical)/i.test(message)
+  || /(?:relation|table).*?(fee_allocation_events|fee_claim_events|fee_accrual_events)_exact.*does not exist/i.test(message)
+  || /(fee_allocation_events|fee_claim_events|fee_accrual_events)_exact.*schema cache/i.test(message)
   || /(?:relation|table).*?(fee_allocation_events|fee_claim_events).*does not exist/i.test(message)
   || /schema cache.*(fee_allocation_events|fee_claim_events)/i.test(message);
 
@@ -20,7 +22,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
   if (!isSupabaseConfigured) return { projects: [] as IndexedProject[], nextOffset: null, source: "unconfigured" as const };
   const client = createServerSupabaseClient();
   const limit = Math.min(Math.max(filters.limit ?? 24, 1), 100);
-  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,treasury_bps,community_bps,creator_destination,treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,website_url,x_url,telegram_url,discord_url)").eq("canonical", true).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
+  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,project_treasury_bps,community_bps,creator_destination,project_treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,website_url,x_url,telegram_url,discord_url)").eq("canonical", true).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
   if (filters.status && filters.status !== "all") query = query.eq("status", filters.status);
   if (filters.creatorAddress) query = query.eq("creator_address", normalizeAddress(filters.creatorAddress));
   if (filters.query?.trim()) { const q = filters.query.trim().replaceAll(",", " "); query = query.or(`name.ilike.%${q}%,symbol.ilike.%${q}%,token_address.ilike.%${normalizeAddress(q)}%`); }
@@ -37,9 +39,9 @@ export async function getProjects(filters: ProjectListFilters = {}) {
     const metrics = Array.isArray(row.project_metrics) ? row.project_metrics[0] : row.project_metrics;
     const split = fee ? DEFAULT_SPLIT.map((item) => ({
       ...item,
-      value: Number(fee[`${item.key}_bps` as "creator_bps" | "liquidity_bps" | "treasury_bps" | "community_bps"]) / 100,
+      value: Number(fee[item.key === "projectTreasury" ? "project_treasury_bps" : `${item.key}_bps` as "creator_bps" | "liquidity_bps" | "community_bps"]) / 100,
       address: item.key === "creator" ? fee.creator_destination ?? undefined
-        : item.key === "treasury" ? fee.treasury_destination ?? undefined
+        : item.key === "projectTreasury" ? fee.project_treasury_destination ?? undefined
           : item.key === "community" ? fee.community_destination ?? undefined
             : process.env.NEXT_PUBLIC_SPLIT_VAULT_MAINNET_ADDRESS ?? undefined,
       type: item.key === "liquidity" ? "SPLIT Liquidity Vault" : item.label,
@@ -58,7 +60,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
 }
 
 function displayUsd(value: string | null | undefined) {
-  return value === null || value === undefined ? "—" : `$${Number(value).toLocaleString()}`;
+  return value === null || value === undefined ? "â€”" : `$${Number(value).toLocaleString()}`;
 }
 
 function asToken(project: IndexedProject): Token {
@@ -70,9 +72,9 @@ function asToken(project: IndexedProject): Token {
     marketCap: displayUsd(project.metrics?.marketCapUsd),
     volume: displayUsd(project.metrics?.volume24hUsd),
     liquidity: displayUsd(project.metrics?.liquidityUsd),
-    holders: project.metrics?.holderCount?.toLocaleString() ?? "—",
-    price: "—",
-    launched: project.launchedAt ? new Date(project.launchedAt).toLocaleDateString() : "—",
+    holders: project.metrics?.holderCount?.toLocaleString() ?? "â€”",
+    price: "â€”",
+    launched: project.launchedAt ? new Date(project.launchedAt).toLocaleDateString() : "â€”",
     color: "#9b64ff",
     description: project.description,
     website: project.website,
@@ -92,7 +94,10 @@ export async function getProjectTokens(filters: ProjectListFilters = {}) {
 export async function getProject(address: string) {
   if (!isSupabaseConfigured) return null;
   const client = createServerSupabaseClient();
-  const { data, error } = await client.from("projects").select("*,fee_configs(*),project_metrics(*),project_metadata(*)").eq("canonical", true).eq("token_address", normalizeAddress(address)).maybeSingle();
+  // Do not select raw numeric(78,0) project/metric columns from base tables:
+  // PostgREST serializes those as JSON numbers. Read financial raw values only
+  // from the *_exact views, which cast them to decimal text in SQL.
+  const { data, error } = await client.from("projects").select("id,chain_id,token_address,creator_address,name,symbol,description,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("canonical", true).eq("token_address", normalizeAddress(address)).maybeSingle();
   if (error) {
     if (isProtocolIndexMigrationMissing(error.message)) return null;
     throw new Error(`Could not load indexed project: ${error.message}`);
@@ -113,9 +118,9 @@ export async function getProjectToken(address: string): Promise<Token | null> {
   const status = project.status as ProjectStatus;
   const split = DEFAULT_SPLIT.map((item) => ({
     ...item,
-    value: Number(fee[`${item.key}_bps` as "creator_bps" | "liquidity_bps" | "treasury_bps" | "community_bps"]) / 100,
+    value: Number(fee[item.key === "projectTreasury" ? "project_treasury_bps" : `${item.key}_bps` as "creator_bps" | "liquidity_bps" | "community_bps"]) / 100,
     address: item.key === "creator" ? fee.creator_destination ?? undefined
-      : item.key === "treasury" ? fee.treasury_destination ?? undefined
+      : item.key === "projectTreasury" ? fee.project_treasury_destination ?? undefined
         : item.key === "community" ? fee.community_destination ?? undefined
           : process.env.NEXT_PUBLIC_SPLIT_VAULT_MAINNET_ADDRESS ?? undefined,
     type: item.key === "liquidity" ? "SPLIT Liquidity Vault" : item.label,
@@ -125,12 +130,12 @@ export async function getProjectToken(address: string): Promise<Token | null> {
     name: project.name,
     ticker: project.symbol,
     status: status === "pending" ? "upcoming" : status,
-    marketCap: metrics?.market_cap_usd ? `$${Number(metrics.market_cap_usd).toLocaleString()}` : "—",
-    volume: metrics?.volume_24h_usd ? `$${Number(metrics.volume_24h_usd).toLocaleString()}` : "—",
-    liquidity: metrics?.liquidity_usd ? `$${Number(metrics.liquidity_usd).toLocaleString()}` : "—",
-    holders: metrics?.holder_count?.toLocaleString() ?? "—",
-    price: "—",
-    launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "—",
+    marketCap: metrics?.market_cap_usd ? `$${Number(metrics.market_cap_usd).toLocaleString()}` : "â€”",
+    volume: metrics?.volume_24h_usd ? `$${Number(metrics.volume_24h_usd).toLocaleString()}` : "â€”",
+    liquidity: metrics?.liquidity_usd ? `$${Number(metrics.liquidity_usd).toLocaleString()}` : "â€”",
+    holders: metrics?.holder_count?.toLocaleString() ?? "â€”",
+    price: "â€”",
+    launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "â€”",
     color: "#9b64ff",
     description: metadata?.description ?? project.description ?? "",
     website: metadata?.website_url ?? project.website_url ?? "",
@@ -145,14 +150,15 @@ export async function getProjectToken(address: string): Promise<Token | null> {
 export async function getProjectFeeHistory(address: string, limit = 50, offset = 0) {
   if (!isSupabaseConfigured) return [];
   const project = await getProject(address); if (!project) return [];
-  const { data, error } = await createServerSupabaseClient().from("fee_allocation_events").select("*").eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending:false }).range(offset, offset + Math.min(limit, 100) - 1);
+  const { data, error } = await createServerSupabaseClient().from("fee_allocation_events_exact").select("*").eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending:false }).range(offset, offset + Math.min(limit, 100) - 1);
   if (error) {
     if (isProtocolIndexMigrationMissing(error.message)) return [];
     throw new Error(`Could not load fee allocation events: ${error.message}`);
   }
   return (data ?? []).flatMap((event) => ([
+    ["protocol treasury", event.protocol_allocation_raw],
     ["creator", event.creator_allocation_raw],
-    ["treasury", event.treasury_allocation_raw],
+    ["project treasury", event.project_treasury_allocation_raw],
     ["community", event.community_allocation_raw],
     ["liquidity", event.liquidity_allocation_raw],
   ] as const).filter(([, raw_amount]) => BigInt(raw_amount) > BigInt(0)).map(([destination_type, raw_amount]) => ({
@@ -171,7 +177,7 @@ export async function getProjectAccrualHistory(address: string, limit = 50, offs
   if (!isSupabaseConfigured) return [];
   const project = await getProject(address);
   if (!project) return [];
-  const { data, error } = await createServerSupabaseClient().from("fee_accrual_events").select("*").eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending:false }).range(offset, offset + Math.min(limit, 100) - 1);
+  const { data, error } = await createServerSupabaseClient().from("fee_accrual_events_exact").select("*").eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending:false }).range(offset, offset + Math.min(limit, 100) - 1);
   if (error) throw new Error(`Could not load accrual events: ${error.message}`);
   return data;
 }
@@ -227,14 +233,14 @@ export async function getDashboardFinancials(walletAddress: string) {
   const projectIds = projectResult.projects.filter((project) => project.split.length === 4).map((project) => project.id);
   const accrualRows: Array<{ currency: string | null; raw_amount: string }> = [];
   for (let offset = 0; ; offset += 1_000) {
-    const { data, error } = await client.from("fee_accrual_events").select("currency,raw_amount").in("project_id", projectIds).eq("canonical", true).range(offset, offset + 999);
+    const { data, error } = await client.from("fee_accrual_events_exact").select("currency,raw_amount").in("project_id", projectIds).eq("canonical", true).range(offset, offset + 999);
     if (error) throw new Error(`Could not load accrued fee totals: ${error.message}`);
     accrualRows.push(...(data ?? []));
     if (!data || data.length < 1_000) break;
   }
-  const allocatedRows: Array<{ currency: string | null; gross_amount_raw: string; creator_allocation_raw: string; treasury_allocation_raw: string; community_allocation_raw: string; liquidity_allocation_raw: string }> = [];
+  const allocatedRows: Array<{ currency: string | null; gross_amount_raw: string; protocol_allocation_raw: string; creator_allocation_raw: string; project_treasury_allocation_raw: string; community_allocation_raw: string; liquidity_allocation_raw: string }> = [];
   for (let offset = 0; ; offset += 1_000) {
-    const { data, error } = await client.from("fee_allocation_events").select("currency,gross_amount_raw,creator_allocation_raw,treasury_allocation_raw,community_allocation_raw,liquidity_allocation_raw").in("project_id", projectIds).eq("canonical", true).range(offset, offset + 999);
+    const { data, error } = await client.from("fee_allocation_events_exact").select("currency,gross_amount_raw,protocol_allocation_raw,creator_allocation_raw,project_treasury_allocation_raw,community_allocation_raw,liquidity_allocation_raw").in("project_id", projectIds).eq("canonical", true).range(offset, offset + 999);
     if (error) {
       if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, indexed: false };
       throw new Error(`Could not load allocated fee totals: ${error.message}`);
@@ -244,7 +250,7 @@ export async function getDashboardFinancials(walletAddress: string) {
   }
   const claimedRows: Array<{ currency: string | null; raw_amount: string }> = [];
   for (let offset = 0; ; offset += 1_000) {
-    const { data, error } = await client.from("fee_claim_events").select("currency,raw_amount").eq("recipient_address", normalizeAddress(walletAddress)).eq("canonical", true).range(offset, offset + 999);
+    const { data, error } = await client.from("fee_claim_events_exact").select("currency,raw_amount").eq("recipient_address", normalizeAddress(walletAddress)).eq("canonical", true).range(offset, offset + 999);
     if (error) {
       if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, indexed: false };
       throw new Error(`Could not load claimed fee totals: ${error.message}`);
@@ -304,7 +310,8 @@ export async function getDashboardFinancials(walletAddress: string) {
   }
   const allocations = ([
     ["creator", "creator_allocation_raw"],
-    ["treasury", "treasury_allocation_raw"],
+    ["protocol_treasury", "protocol_allocation_raw"],
+    ["project_treasury", "project_treasury_allocation_raw"],
     ["community", "community_allocation_raw"],
     ["liquidity", "liquidity_allocation_raw"],
   ] as const).flatMap(([destination_type, field]) => allocatedRows.map((row) => ({ currency: row.currency, destination_type, raw_amount: row[field] })));

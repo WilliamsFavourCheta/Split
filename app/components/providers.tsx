@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
@@ -37,8 +37,9 @@ type LaunchDraft = {
   tokenSeedAmount: string;
   feeRate: string;
   quoteAsset: string;
+  projectTreasuryAddress: string;
   communityAddress: string;
-  allocations: { creator: number; liquidity: number; treasury: number; community: number };
+  allocations: { creator: number; liquidity: number; projectTreasury: number; community: number };
 };
 
 const DEFAULT_DRAFT: LaunchDraft = {
@@ -55,8 +56,9 @@ const DEFAULT_DRAFT: LaunchDraft = {
   tokenSeedAmount: "1000000",
   feeRate: "1",
   quoteAsset: "ETH",
+  projectTreasuryAddress: "",
   communityAddress: "",
-  allocations: { creator: 40, liquidity: 30, treasury: 20, community: 10 },
+  allocations: { creator: 40, liquidity: 30, projectTreasury: 20, community: 10 },
 };
 
 type LaunchContextValue = {

@@ -1,6 +1,8 @@
 import "server-only";
 import { createIndexerSupabaseClient } from "../supabase/server";
 import type {
+  LaunchProtocolFeeChargedEvent,
+  ProtocolFeesClaimedEvent,
   FeesAccruedEvent,
   FeesAllocatedEvent,
   FeesClaimedEvent,
@@ -64,10 +66,10 @@ export async function upsertFeeConfiguration(event: SplitConfiguredEvent, tokenA
     project_id: projectId,
     creator_bps: event.creatorBps,
     liquidity_bps: event.liquidityBps,
-    treasury_bps: event.treasuryBps,
+    project_treasury_bps: event.projectTreasuryBps,
     community_bps: event.communityBps,
     creator_destination: normalizeAddress(event.creatorAddress),
-    treasury_destination: normalizeAddress(event.treasuryAddress),
+    project_treasury_destination: normalizeAddress(event.projectTreasuryAddress),
     community_destination: normalizeAddress(event.communityAddress),
     config_tx_hash: event.txHash.toLowerCase(),
     block_number: event.blockNumber,
@@ -110,8 +112,9 @@ export async function upsertAllocationEvent(event: FeesAllocatedEvent, tokenAddr
     block_hash: event.blockHash.toLowerCase(),
     block_timestamp: event.blockTimestamp ?? null,
     gross_amount_raw: event.grossAmount,
+    protocol_allocation_raw: event.protocolAllocation,
     creator_allocation_raw: event.creatorAllocation,
-    treasury_allocation_raw: event.treasuryAllocation,
+    project_treasury_allocation_raw: event.projectTreasuryAllocation,
     community_allocation_raw: event.communityAllocation,
     liquidity_allocation_raw: event.liquidityAllocation,
     canonical: true,
@@ -127,6 +130,9 @@ export async function upsertClaimEvent(event: FeesClaimedEvent, tokenAddress: st
     pool_id: event.poolId.toLowerCase(),
     currency: normalizeAddress(event.currency),
     recipient_address: normalizeAddress(event.recipientAddress),
+    // FeesClaimed does not encode which project role claimed the balance. Keep
+    // it generic rather than falsely attributing every claim to the creator.
+    recipient_type: "project_recipient",
     tx_hash: event.txHash.toLowerCase(),
     log_index: event.logIndex,
     block_number: event.blockNumber,
@@ -136,6 +142,45 @@ export async function upsertClaimEvent(event: FeesClaimedEvent, tokenAddress: st
     canonical: true,
   }, { onConflict: "chain_id,tx_hash,log_index" });
   if (error) throw new Error(`Indexer claim event upsert failed: ${error.message}`);
+}
+
+export async function upsertProtocolClaimEvent(event: ProtocolFeesClaimedEvent, tokenAddress: string) {
+  const projectId = await requireProject(event.chainId, tokenAddress);
+  const { error } = await createIndexerSupabaseClient().from("fee_claim_events").upsert({
+    project_id: projectId,
+    chain_id: event.chainId,
+    pool_id: event.poolId.toLowerCase(),
+    currency: normalizeAddress(event.currency),
+    recipient_address: normalizeAddress(event.recipientAddress),
+    recipient_type: "protocol_treasury",
+    tx_hash: event.txHash.toLowerCase(),
+    log_index: event.logIndex,
+    block_number: event.blockNumber,
+    block_hash: event.blockHash.toLowerCase(),
+    block_timestamp: event.blockTimestamp ?? null,
+    raw_amount: event.rawAmount,
+    canonical: true,
+  }, { onConflict: "chain_id,tx_hash,log_index" });
+  if (error) throw new Error(`Indexer protocol claim upsert failed: ${error.message}`);
+}
+
+export async function upsertProtocolLaunchFee(event: LaunchProtocolFeeChargedEvent) {
+  const projectId = await requireProject(event.chainId, event.tokenAddress);
+  const { error } = await createIndexerSupabaseClient().from("protocol_launch_fee_events").upsert({
+    project_id: projectId,
+    chain_id: event.chainId,
+    pool_id: event.poolId.toLowerCase(),
+    token_address: normalizeAddress(event.tokenAddress),
+    creator_address: normalizeAddress(event.creatorAddress),
+    tx_hash: event.txHash.toLowerCase(),
+    log_index: event.logIndex,
+    block_number: event.blockNumber,
+    block_hash: event.blockHash.toLowerCase(),
+    block_timestamp: event.blockTimestamp ?? null,
+    raw_amount: event.rawAmount,
+    canonical: true,
+  }, { onConflict: "chain_id,tx_hash,log_index" });
+  if (error) throw new Error(`Indexer launch protocol fee upsert failed: ${error.message}`);
 }
 
 export async function upsertLiquidityCredit(event: LiquidityCreditedEvent, tokenAddress: string) {
