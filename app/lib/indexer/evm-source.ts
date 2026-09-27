@@ -168,6 +168,13 @@ export async function getFinalizedEvents(fromBlock: bigint, toBlock: bigint): Pr
         recipientAddress: required<string>(args, "recipient"),
         rawAmount: required<bigint>(args, "amount").toString(),
       });
+    } else if (event.eventName === "ProtocolLaunchFeesClaimed") {
+      result.push({
+        ...base,
+        type: "ProtocolLaunchFeesClaimed",
+        recipientAddress: required<string>(args, "recipient"),
+        rawAmount: required<bigint>(args, "amount").toString(),
+      });
     } else if (event.eventName === "LiquidityCredited") {
       result.push({
         ...base,

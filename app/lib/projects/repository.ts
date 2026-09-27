@@ -4,7 +4,7 @@ import type { DestinationType, ProjectStatus } from "../supabase/database.types"
 import { DEFAULT_SPLIT, type Allocation, type Token } from "../../data/mock";
 import { isAddress, zeroAddress } from "viem";
 import { splitHookAbi, splitLiquidityVaultAbi } from "../../contracts/abis";
-import { indexerClient } from "../indexer/evm-source";
+import { indexerClient, RH_MAINNET_CHAIN_ID } from "../indexer/evm-source";
 
 export type ProjectListFilters = { query?: string; creatorAddress?: string; status?: ProjectStatus | "all"; limit?: number; offset?: number };
 export type IndexedProject = { id:string; chainId:number; tokenAddress:string; poolId:string|null; quoteAsset:string|null; creatorAddress:string; name:string; symbol:string; description:string; website:string; twitter:string; telegram:string; discord:string; status:ProjectStatus; launchedAt:string|null; verified:boolean; split:Allocation[]; metrics?: { marketCapUsd:string|null; volume24hUsd:string|null; liquidityUsd:string|null; holderCount:number|null } };
@@ -191,6 +191,26 @@ export async function getDashboardFeeStats(walletAddress: string) {
 
 export async function getDashboardFinancials(walletAddress: string) {
   const client = isSupabaseConfigured ? createServerSupabaseClient() : null;
+  const protocolLaunchFeeClaims: Array<{ id: string; txHash: string; blockNumber: number; rawAmount: string }> = [];
+  if (client) {
+    for (let offset = 0; ; offset += 1_000) {
+      const { data, error } = await client.from("protocol_launch_fee_claim_events_exact")
+        .select("id,tx_hash,block_number,raw_amount")
+        .eq("chain_id", RH_MAINNET_CHAIN_ID)
+        .eq("recipient_address", normalizeAddress(walletAddress))
+        .eq("canonical", true)
+        .order("block_number", { ascending: false })
+        .range(offset, offset + 999);
+      if (error) throw new Error(`Could not load protocol launch-fee claim history: ${error.message}`);
+      protocolLaunchFeeClaims.push(...(data ?? []).map((row) => ({
+        id: row.id,
+        txHash: row.tx_hash,
+        blockNumber: row.block_number,
+        rawAmount: row.raw_amount,
+      })));
+      if (!data || data.length < 1_000) break;
+    }
+  }
   const allProjects: IndexedProject[] = [];
   const claimProjects: IndexedProject[] = [];
   let migrationRequired = false;
@@ -225,10 +245,10 @@ export async function getDashboardFinancials(walletAddress: string) {
     symbol: project.symbol,
   }));
   if (migrationRequired) {
-    return { projects, claimTargets: [], accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, indexed: false };
+    return { projects, claimTargets: [], accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, protocolLaunchFeeClaims, indexed: false };
   }
   if (!client || projects.length === 0) {
-    return { projects, claimTargets, accrued: [], unrouted: null as Array<{ currency: string; rawAmount: string; count: number }> | null, allocated: [], claimed: [], liquidityReserved: null as Array<{ currency: string; rawAmount: string }> | null, indexed: Boolean(client) };
+    return { projects, claimTargets, accrued: [], unrouted: null as Array<{ currency: string; rawAmount: string; count: number }> | null, allocated: [], claimed: [], liquidityReserved: null as Array<{ currency: string; rawAmount: string }> | null, protocolLaunchFeeClaims, indexed: Boolean(client) };
   }
   const projectIds = projectResult.projects.filter((project) => project.split.length === 4).map((project) => project.id);
   const accrualRows: Array<{ currency: string | null; raw_amount: string }> = [];
@@ -315,7 +335,7 @@ export async function getDashboardFinancials(walletAddress: string) {
     ["community", "community_allocation_raw"],
     ["liquidity", "liquidity_allocation_raw"],
   ] as const).flatMap(([destination_type, field]) => allocatedRows.map((row) => ({ currency: row.currency, destination_type, raw_amount: row[field] })));
-  return { projects, claimTargets, accrued: group(accrualRows), unrouted, allocated: group(allocations, true), claimed: group(claimedRows), liquidityReserved, indexed: true };
+  return { projects, claimTargets, accrued: group(accrualRows), unrouted, allocated: group(allocations, true), claimed: group(claimedRows), liquidityReserved, protocolLaunchFeeClaims, indexed: true };
 }
 
 export type IndexedRoutingEvent = { chainId:number; txHash:string; logIndex:number; projectId:string; blockNumber:number; destinationType:DestinationType; rawAmount:string; tokenAddress?:string; destinationAddress?:string; tokenDecimals?:number; blockTimestamp?:string };

@@ -72,6 +72,13 @@ export type LaunchProtocolFeeChargedEvent = ChainEvent & {
   rawAmount: string;
 };
 
+/** ProtocolLaunchFeesClaimed has no project/pool fields: only persist its actual arguments. */
+export type ProtocolLaunchFeesClaimedEvent = ChainEvent & {
+  type: "ProtocolLaunchFeesClaimed";
+  recipientAddress: string;
+  rawAmount: string;
+};
+
 export type FeesClaimedEvent = ChainEvent & {
   type: "FeesClaimed";
   poolId: string;
@@ -95,6 +102,7 @@ export type SplitIndexerEvent =
   | FeesClaimedEvent
   | ProtocolFeesClaimedEvent
   | LaunchProtocolFeeChargedEvent
+  | ProtocolLaunchFeesClaimedEvent
   | LiquidityCreditedEvent;
 
 /** A source must only return blocks beneath its configured finality depth. */

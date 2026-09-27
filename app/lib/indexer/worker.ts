@@ -11,9 +11,11 @@ import {
   upsertLaunch,
   upsertLiquidityCredit,
   upsertProtocolClaimEvent,
+  upsertProtocolLaunchFeeClaim,
   upsertProtocolLaunchFee,
 } from "./repository";
 import type { SplitIndexerEvent } from "./types";
+import { boundedBatchEnd, replayEventsInCanonicalOrder, verifiedRecoveryStart } from "./remediation-logic";
 import { createIndexerSupabaseClient } from "../supabase/server";
 
 function positiveInteger(value: string | undefined, fallback: number, name: string) {
@@ -49,6 +51,10 @@ async function applyEvent(event: SplitIndexerEvent, tokens: Map<string, string>)
     await upsertProtocolLaunchFee(event);
     return undefined;
   }
+  if (event.type === "ProtocolLaunchFeesClaimed") {
+    await upsertProtocolLaunchFeeClaim(event);
+    return undefined;
+  }
   const token = await tokenForPool(event.poolId, tokens);
   if (event.type === "SplitConfigured") await upsertFeeConfiguration(event, token);
   else if (event.type === "FeesAccrued") await upsertAccrual(event, token);
@@ -60,8 +66,8 @@ async function applyEvent(event: SplitIndexerEvent, tokens: Map<string, string>)
 }
 
 /**
- * Poll one bounded, finalized range. Replays the recent overlap with upserts and
- * canonical flags so a short reorg cannot create duplicate financial events.
+ * Poll one bounded, finalized range. Replay is idempotent; deep checkpoint
+ * mismatches halt before rollback until an operator verifies a common ancestor.
  */
 export async function runIndexerBatch() {
   const contracts = getIndexerContracts();
@@ -76,13 +82,32 @@ export async function runIndexerBatch() {
   let from = checkpoint
     ? BigInt(Math.max(Number(startBlock), checkpoint.last_processed_block - Number(reorgWindow) + 1))
     : startBlock;
-  const to = finalizedHead < from + batchSize - BigInt(1) ? finalizedHead : from + batchSize - BigInt(1);
+  let to = boundedBatchEnd(from, finalizedHead, batchSize);
 
   if (checkpoint?.last_processed_block_hash) {
     const savedBlock = BigInt(checkpoint.last_processed_block);
     const canonicalHash = await getBlockHash(savedBlock);
     if (canonicalHash.toLowerCase() !== checkpoint.last_processed_block_hash.toLowerCase()) {
-      from = BigInt(Math.max(Number(startBlock), checkpoint.last_processed_block - Number(reorgWindow) + 1));
+      const recoveryFrom = process.env.SPLIT_INDEXER_RECOVERY_FROM_BLOCK;
+      const expectedAncestorHash = process.env.SPLIT_INDEXER_RECOVERY_ANCESTOR_HASH;
+      if (!recoveryFrom || !expectedAncestorHash) {
+        throw new Error(
+          `Deep reorg/checkpoint mismatch at block ${savedBlock}. Indexing halted before rollback. ` +
+          "Verify a common ancestor and set SPLIT_INDEXER_RECOVERY_FROM_BLOCK to ancestor+1 plus " +
+          "SPLIT_INDEXER_RECOVERY_ANCESTOR_HASH, then retry.",
+        );
+      }
+      const candidateFrom = BigInt(positiveInteger(recoveryFrom, 0, "SPLIT_INDEXER_RECOVERY_FROM_BLOCK"));
+      const ancestorNumber = candidateFrom - BigInt(1);
+      const actualAncestorHash = await getBlockHash(ancestorNumber);
+      from = verifiedRecoveryStart({
+        startBlock,
+        checkpointBlock: savedBlock,
+        replayFrom: candidateFrom,
+        expectedAncestorHash,
+        actualAncestorHash,
+      });
+      to = boundedBatchEnd(from, finalizedHead, batchSize);
     }
   }
   if (from > to) return { chainId: RH_MAINNET_CHAIN_ID, indexedThrough: Number(to), events: 0, status: "current" as const };
@@ -90,18 +115,9 @@ export async function runIndexerBatch() {
   await markReorgedEventsNoncanonical(RH_MAINNET_CHAIN_ID, Number(from));
   const events = await getFinalizedEvents(from, to);
   const tokens = new Map<string, string>();
-  let indexedLaunches = 0;
   // TokenLaunched is emitted last in launch(), after its SplitConfigured log.
   // Index launches first so same-batch configuration logs have a project FK.
-  for (const event of events) {
-    if (event.type === "TokenLaunched") {
-      await applyEvent(event, tokens);
-      indexedLaunches += 1;
-    }
-  }
-  for (const event of events) {
-    if (event.type !== "TokenLaunched") await applyEvent(event, tokens);
-  }
+  const indexedLaunches = await replayEventsInCanonicalOrder(events, (event) => applyEvent(event, tokens));
   const blockHash = await getBlockHash(to);
   await saveIndexerCheckpoint(RH_MAINNET_CHAIN_ID, contracts.factory, Number(to), blockHash);
   return {

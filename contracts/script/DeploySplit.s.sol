@@ -24,6 +24,10 @@ contract DeploySplit {
     error UnsupportedDeploymentChain(uint256 chainId);
     error WrongMainnetPoolManager(address supplied);
     error PoolManagerHasNoCode();
+    error InvalidProtocolTreasury();
+    error ProtocolTreasuryConfirmationMismatch(address configured, address confirmed);
+    error TreasuryOperationalChecksRequired();
+    error DeploymentVerificationFailed();
 
     function run()
         external
@@ -37,6 +41,7 @@ contract DeploySplit {
 
         IPoolManager manager = IPoolManager(vm.envAddress("SPLIT_POOL_MANAGER"));
         address protocolTreasury = vm.envAddress("SPLIT_PROTOCOL_TREASURY");
+        if (protocolTreasury == address(0)) revert InvalidProtocolTreasury();
         if (address(manager).code.length == 0) revert PoolManagerHasNoCode();
 
         // RH testnet currently has no official compatible v4 PoolManager.
@@ -46,12 +51,26 @@ contract DeploySplit {
                 revert WrongMainnetPoolManager(address(manager));
             }
             if (!vm.envBool("ALLOW_RH_MAINNET_DEPLOYMENT")) revert MainnetNeedsExplicitApproval();
+            address confirmedTreasury = vm.envAddress("SPLIT_PROTOCOL_TREASURY_CONFIRMATION");
+            if (confirmedTreasury != protocolTreasury) {
+                revert ProtocolTreasuryConfirmationMismatch(protocolTreasury, confirmedTreasury);
+            }
+            // This is an operator attestation, not an on-chain proof. The treasury
+            // runbook requires validating signing/control and both native-ETH claim paths.
+            if (!vm.envBool("SPLIT_PROTOCOL_TREASURY_OPERATIONALLY_VERIFIED")) {
+                revert TreasuryOperationalChecksRequired();
+            }
         }
 
         vm.startBroadcast();
-        SplitStackDeployer deployer = new SplitStackDeployer();
+        SplitStackDeployer deployer = new SplitStackDeployer(manager, protocolTreasury);
         bytes32 salt = _findHookSalt(manager, address(deployer));
-        (factory, hook, router, vault) = deployer.deploy(manager, protocolTreasury, salt);
+        (factory, hook, router, vault) = deployer.deploy(salt);
+        if (
+            address(factory.poolManager()) != address(manager) || factory.protocolTreasury() != protocolTreasury
+                || router.protocolTreasury() != protocolTreasury || address(hook) != address(factory.hook())
+                || address(vault) != address(factory.liquidityVault()) || !deployer.deployed()
+        ) revert DeploymentVerificationFailed();
         vm.stopBroadcast();
     }
 

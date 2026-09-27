@@ -29,6 +29,7 @@ interface Vm {
     function envString(string calldata) external view returns (string memory);
     function envUint(string calldata) external view returns (uint256);
     function createSelectFork(string calldata, uint256) external returns (uint256);
+    function rollFork(uint256) external;
     function load(address, bytes32) external view returns (bytes32);
     function skip(bool) external;
 }
@@ -313,6 +314,69 @@ contract SplitProtocolTest is IUnlockCallback {
         uint256 recipientBalanceAfter
     );
     event ForkRejectedClaimGas(address indexed recipient, address indexed currency, uint256 claimable, uint256 gasUsed);
+    event ForkStackDeploymentGas(address indexed stackDeployer, uint256 helperCreateGas, uint256 stackCreationGas);
+
+    function testProductionStackDeployerBindsConfigurationAndRejectsPreemption() external {
+        PoolManager manager = new PoolManager(address(this));
+        NativeReceiver intendedTreasury = new NativeReceiver();
+        ProductionSplitStackDeployer deployer =
+            new ProductionSplitStackDeployer(IPoolManager(address(manager)), address(intendedTreasury));
+        require(deployer.authorizedDeployer() == address(this), "AUTHORIZED_DEPLOYER_NOT_BOUND");
+        require(address(deployer.expectedPoolManager()) == address(manager), "MANAGER_NOT_BOUND");
+        require(deployer.protocolTreasury() == address(intendedTreasury), "TREASURY_NOT_BOUND");
+
+        bytes32 salt = _findProductionHookSalt(IPoolManager(address(manager)), address(deployer));
+        vm.expectRevert();
+        vm.prank(address(0xBEEF));
+        deployer.deploy(salt);
+        require(!deployer.deployed(), "UNAUTHORIZED_CALL_CONSUMED_DEPLOYMENT");
+
+        (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault) = deployer.deploy(salt);
+        require(factory.protocolTreasury() == address(intendedTreasury), "FACTORY_TREASURY_REPLACED");
+        require(router.protocolTreasury() == address(intendedTreasury), "ROUTER_TREASURY_REPLACED");
+        require(address(factory.poolManager()) == address(manager), "FACTORY_MANAGER_REPLACED");
+        require(address(factory.hook()) == address(hook), "HOOK_ADDRESS_MISMATCH");
+        require(address(factory.feeRouter()) == address(router), "ROUTER_ADDRESS_MISMATCH");
+        require(address(factory.liquidityVault()) == address(vault), "VAULT_ADDRESS_MISMATCH");
+        require(uint160(address(hook)) & 0x3fff == 0x44, "HOOK_PERMISSION_BITS_MISMATCH");
+        require(deployer.deployed(), "DEPLOYMENT_NOT_MARKED_COMPLETE");
+
+        vm.expectRevert();
+        deployer.deploy(salt);
+    }
+
+    function testProductionStackDeployerRejectsWrongConstructorConfiguration() external {
+        PoolManager manager = new PoolManager(address(this));
+        vm.expectRevert();
+        new ProductionSplitStackDeployer(IPoolManager(address(manager)), address(0));
+        vm.expectRevert();
+        new ProductionSplitStackDeployer(IPoolManager(address(0x1234)), address(this));
+    }
+
+    function testUnregisteredAlternatePoolCannotAccrueSPLITFees() external {
+        PoolManager manager = new PoolManager(address(this));
+        SplitHook hook = _deployHook(IPoolManager(address(manager)), address(this), address(this));
+        SplitToken token = new SplitToken("Alternate Venue", "ALT", 10_000 ether, address(this));
+        PoolKey memory alternateKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(address(token)),
+            fee: 3_000,
+            tickSpacing: 60,
+            hooks: IHooks(address(hook))
+        });
+        PoolId alternatePoolId = alternateKey.toId();
+        require(!hook.registeredPool(alternatePoolId), "ALTERNATE_POOL_SHOULD_NOT_BE_REGISTERED");
+        vm.expectRevert();
+        vm.prank(address(manager));
+        hook.afterSwap(
+            address(this),
+            alternateKey,
+            SwapParams(true, -1_000, 0x1000000000000000000000000),
+            toBalanceDelta(-1_000, 1_000),
+            ""
+        );
+        require(hook.accrued(alternatePoolId, Currency.wrap(address(token))) == 0, "ALTERNATE_POOL_ACCRUED_FEE");
+    }
 
     receive() external payable {}
 
@@ -1313,6 +1377,12 @@ contract SplitProtocolTest is IUnlockCallback {
         }
         vm.createSelectFork(rpcUrl, forkBlock);
         require(forkBlock == 73_152_779, "UNEXPECTED_FORK_BLOCK");
+        vm.rollFork(forkBlock + 1);
+        require(
+            blockhash(forkBlock) == 0x7f624ae3099fd979b0479291cb80adf8a4daab2ea3be07a2e23a038b9aedea06,
+            "UNEXPECTED_FORK_BLOCK_HASH"
+        );
+        vm.rollFork(forkBlock);
         require(block.chainid == 4663, "NOT_RH_MAINNET_FORK");
 
         IPoolManager manager = IPoolManager(0x8366a39CC670B4001A1121B8F6A443A643e40951);
@@ -1329,14 +1399,20 @@ contract SplitProtocolTest is IUnlockCallback {
         NativeReceiver protocolTreasury = new NativeReceiver();
         NativeReceiver projectTreasury = new NativeReceiver();
         NativeReceiver community = new NativeReceiver();
-        // Match DeploySplit's deterministic simulated sender and nonce so this fork
-        // lifecycle deploys the same production stack addresses as the script dry-run.
-        vm.prank(0x000000000000000000000000000000000000dEaD);
-        ProductionSplitStackDeployer deployer = new ProductionSplitStackDeployer();
+        // Match DeploySplit's deterministic simulated sender and nonce for reproducible
+        // helper and child CREATE/CREATE2 address checks in the fork lifecycle.
+        address simulatedDeployer = 0x000000000000000000000000000000000000dEaD;
+        uint256 helperCreateStart = gasleft();
+        vm.prank(simulatedDeployer);
+        ProductionSplitStackDeployer deployer = new ProductionSplitStackDeployer(manager, address(protocolTreasury));
+        uint256 helperCreateGas = helperCreateStart - gasleft();
         require(address(deployer) == 0x9B137463d4E7986D7f535f9B79e28b4EF1938E9b, "SCRIPT_DEPLOYER_ADDRESS_MISMATCH");
         bytes32 hookSalt = _findProductionHookSalt(manager, address(deployer));
+        uint256 stackCreationStart = gasleft();
+        vm.prank(simulatedDeployer);
         (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault) =
-            deployer.deploy(manager, address(protocolTreasury), hookSalt);
+            deployer.deploy(hookSalt);
+        emit ForkStackDeploymentGas(address(deployer), helperCreateGas, stackCreationStart - gasleft());
         require(factory.protocolTreasury() == address(protocolTreasury), "FACTORY_PROTOCOL_TREASURY_MISMATCH");
         require(router.protocolTreasury() == address(protocolTreasury), "ROUTER_PROTOCOL_TREASURY_MISMATCH");
         forkRouter = router;

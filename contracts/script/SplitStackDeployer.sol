@@ -15,13 +15,37 @@ contract SplitStackDeployer {
     error HookDeploymentFailed();
     error DeploymentAddressMismatch();
     error InvalidHookSalt();
+    error UnauthorizedDeployer(address caller);
+    error AlreadyDeployed();
+    error InvalidConfiguration();
+
+    address public immutable authorizedDeployer;
+    IPoolManager public immutable expectedPoolManager;
+    address public immutable protocolTreasury;
+    bool public deployed;
 
     event StackDeployed(address factory, address hook, address router, address vault, address poolManager);
 
-    function deploy(IPoolManager manager, address protocolTreasury, bytes32 salt)
+    /// @notice Bind the helper to its deployer and intended immutable configuration
+    /// before it is published. A front-runner cannot substitute a manager or treasury.
+    constructor(IPoolManager manager, address treasury) {
+        if (address(manager) == address(0) || address(manager).code.length == 0 || treasury == address(0)) {
+            revert InvalidConfiguration();
+        }
+        authorizedDeployer = msg.sender;
+        expectedPoolManager = manager;
+        protocolTreasury = treasury;
+    }
+
+    function deploy(bytes32 salt)
         public
         returns (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault)
     {
+        if (msg.sender != authorizedDeployer) revert UnauthorizedDeployer(msg.sender);
+        if (deployed) revert AlreadyDeployed();
+        deployed = true;
+        IPoolManager manager = expectedPoolManager;
+        address treasury = protocolTreasury;
         address vaultAddress = _createAddress(address(this), 1);
         address routerAddress = _createAddress(address(this), 2);
         // CREATE2 advances this contract's nonce too, so factory is CREATE nonce four.
@@ -35,14 +59,14 @@ contract SplitStackDeployer {
         if (uint160(hookAddress) & HOOK_MASK != HOOK_FLAGS) revert InvalidHookSalt();
 
         vault = new SplitLiquidityVault(factoryAddress, routerAddress, manager);
-        router = new SplitFeeRouter(factoryAddress, hookAddress, vault, protocolTreasury);
+        router = new SplitFeeRouter(factoryAddress, hookAddress, vault, treasury);
         address deployedHook;
         assembly ("memory-safe") {
             deployedHook := create2(0, add(hookCode, 0x20), mload(hookCode), salt)
         }
         if (deployedHook != hookAddress || deployedHook.code.length == 0) revert HookDeploymentFailed();
         hook = SplitHook(payable(deployedHook));
-        factory = new SplitFactory(manager, hook, router, vault, protocolTreasury);
+        factory = new SplitFactory(manager, hook, router, vault, treasury);
         if (
             address(vault) != vaultAddress || address(router) != routerAddress || address(factory) != factoryAddress
                 || uint160(address(hook)) & HOOK_MASK != HOOK_FLAGS
