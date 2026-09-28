@@ -1,18 +1,17 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useConnection, usePublicClient, useWalletClient } from "wagmi";
 import { decodeEventLog, formatEther, isAddress, parseEther, zeroHash } from "viem";
-import { getSplitFactoryAddress } from "../contracts/addresses";
+import { getSplitFactoryAddress, productionLaunchEnabled } from "../contracts/addresses";
 import { splitFactoryAbi } from "../contracts/abis";
 import { waitForSuccessfulReceipt } from "../contracts/interactions";
 import { createBrowserSupabaseClient, isSupabaseConfigured } from "../lib/supabase/client";
 import { DEFAULT_SPLIT, type Allocation } from "../data/mock";
 import { useLaunchDraft, useToast, useWallet } from "./providers";
-import { AppShell, CopyButton } from "./shell";
+import { AppShell } from "./shell";
 import { Icon } from "./icons";
 import { SplitStrip } from "./visuals";
 import { targetChainId } from "../web3/chains";
@@ -40,6 +39,11 @@ export function OnchainLaunchReview() {
     || wallet.status === "connecting" || wallet.status === "restoring" || wallet.status === "switching" || wallet.status === "disconnecting";
 
   const deploy = async () => {
+    if (!productionLaunchEnabled) {
+      setTxError("Production token launching is disabled in this pre-launch preview. No transaction was sent.");
+      setTxState("error");
+      return;
+    }
     if (wallet.status === "wrong-network") { await wallet.switchNetwork(); return; }
     if (wallet.status !== "connected" || !wallet.address) { await wallet.openWallet(); return; }
     if (!factoryAddress || !walletClient || !publicClient || !connector) {
@@ -134,7 +138,7 @@ export function OnchainLaunchReview() {
           await new Promise((resolve) => window.setTimeout(resolve, 1_000));
         }
       }
-      if (!indexed) showToast("Launch confirmed. Indexing your projectâ€¦", "default");
+      if (!indexed) showToast("Launch confirmed. Indexing your project...", "default");
       router.push(`/launch/success?token=${confirmedToken}&tx=${submittedHash}&indexed=${indexed ? "1" : "0"}`);
     } catch (error) {
       if (submittedHash) setTxHash(submittedHash);
@@ -150,7 +154,8 @@ export function OnchainLaunchReview() {
     }
   };
 
-  const actionLabel = wallet.status === "wrong-network" ? "Switch Network"
+  const actionLabel = !productionLaunchEnabled ? "Pre-launch preview"
+    : wallet.status === "wrong-network" ? "Switch Network"
     : wallet.status === "connecting" ? "Connecting Wallet"
       : wallet.status === "restoring" ? "Restoring Wallet"
         : wallet.status === "switching" ? "Switching Network"
@@ -167,17 +172,17 @@ export function OnchainLaunchReview() {
     <section>
       <span className="eyebrow">Step 04 / Review</span><h2 className="review-title">Review your<br /><span>launch.</span></h2>
       <p className="review-lede">A confirmed factory transaction creates the token, pool, vault-owned seed position, and immutable split in one atomic call.</p>
-      <ReviewSection title="Token" editHref="/launch/details"><dl><div><dt>Name</dt><dd>{draft.name || "Not provided"}</dd></div><div><dt>Symbol</dt><dd>${draft.symbol || "â€”"}</dd></div><div><dt>Description</dt><dd>{draft.description || "No description"}</dd></div></dl></ReviewSection>
+      <ReviewSection title="Token" editHref="/launch/details"><dl><div><dt>Name</dt><dd>{draft.name || "Not provided"}</dd></div><div><dt>Symbol</dt><dd>${draft.symbol || "-"}</dd></div><div><dt>Description</dt><dd>{draft.description || "No description"}</dd></div></dl></ReviewSection>
       <ReviewSection title="Market" editHref="/launch/market"><dl><div><dt>Fixed launch fee</dt><dd>0.0005 ETH (Protocol Treasury)</dd></div><div><dt>Initial quote liquidity</dt><dd>{draft.initialLiquidity} ETH (project seed)</dd></div><div><dt>Initial token liquidity</dt><dd>{draft.tokenSeedAmount} ${draft.symbol || "TOKEN"}</dd></div><div><dt>Total ETH required</dt><dd>{totalEthRequired} ETH + network gas</dd></div><div><dt>SPLIT trading fee</dt><dd>1% on official registered-pool swaps · 10% of collected fee to Protocol Treasury · 90% programmable</dd></div><div><dt>Pool LP fee</dt><dd>0.30%</dd></div></dl></ReviewSection>
       <ReviewSection title="Project fee split (100% of programmable 90%)" editHref="/launch/split"><SplitStrip allocations={allocations} /><div className="review-split">{allocations.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}<strong>{item.value}%</strong></span>)}</div><p>Protocol Treasury receives a separate, non-configurable 10% of every collected SPLIT swap fee. The four percentages below divide only the remaining 90%.</p><p>Creator recipient: <code>{wallet.address || "Connect wallet"}</code></p><p>Liquidity allocation: <strong>{draft.allocations.liquidity}%</strong> to the SPLIT LiquidityVault; the seeded LP position is vault-controlled.</p><p>Project Treasury recipient: <code>{draft.allocations.projectTreasury === 0 ? "Not allocated (0%)" : draft.projectTreasuryAddress || "Not set"}</code></p><p>Community recipient: <code>{draft.communityAddress || "Not set"}</code></p></ReviewSection>
     </section>
     <aside className="deploy-card glass-panel">
       <span className="eyebrow">Deployment</span>
-      <h3>{txState === "indexing" ? "Launch confirmed" : wallet.status === "connected" ? "Ready to deploy" : "Connect your wallet"}</h3>
-      <p>{txState === "indexing" ? "The Robinhood Chain transaction is confirmed. Weâ€™re waiting for the indexer to publish your project." : "Review the fee destinations and seed amounts. SPLIT fees accrue on swaps and are routed separately."}</p>
-      <div className="deploy-cost"><span>Target network</span><strong>{wallet.targetChainName}</strong><span>Factory</span><strong>{factoryAddress ? `${factoryAddress.slice(0, 8)}â€¦${factoryAddress.slice(-6)}` : "Not configured"}</strong><span>Fee configuration</span><strong>{factoryAddress ? "Onchain / immutable" : "Awaiting verified deployment"}</strong></div>
-      <button className="button button-primary deploy-button" disabled={busy || (!factoryAddress && wallet.status === "connected")} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
-      {txHash && transactionUrl ? <a className="deploy-disclaimer" href={transactionUrl} target="_blank" rel="noreferrer">View transaction {txHash.slice(0, 10)}â€¦</a> : null}
+      <h3>{!productionLaunchEnabled ? "Visual review only" : txState === "indexing" ? "Launch confirmed" : wallet.status === "connected" ? "Ready to deploy" : "Connect your wallet"}</h3>
+      <p>{!productionLaunchEnabled ? "Contracts have not completed release approval or production deployment. You can review the launch flow, but no transaction can be submitted." : txState === "indexing" ? "The Robinhood Chain transaction is confirmed. We're waiting for the indexer to publish your project." : "Review the fee destinations and seed amounts. SPLIT fees accrue on swaps and are routed separately."}</p>
+      <div className="deploy-cost"><span>Target network</span><strong>{wallet.targetChainName}</strong><span>Factory</span><strong>{factoryAddress ? `${factoryAddress.slice(0, 8)}...${factoryAddress.slice(-6)}` : "Not configured"}</strong><span>Fee configuration</span><strong>{factoryAddress ? "Onchain / immutable" : "Awaiting verified deployment"}</strong></div>
+      <button className="button button-primary deploy-button" disabled={!productionLaunchEnabled || busy || (!factoryAddress && wallet.status === "connected")} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled ? "lock" : wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
+      {txHash && transactionUrl ? <a className="deploy-disclaimer" href={transactionUrl} target="_blank" rel="noreferrer">View transaction {txHash.slice(0, 10)}...</a> : null}
       {txError ? <p className="form-error" role="alert">{txError}</p> : null}
       <small className="deploy-disclaimer"><Icon name="lock" />No database write is treated as a launch. The confirmed chain event is the source of truth.</small>
     </aside>
@@ -189,20 +194,14 @@ function ReviewSection({ title, editHref, children }: { title: string; editHref:
 }
 
 export function OnchainLaunchSuccessPage() {
-  const { draft, resetDraft } = useLaunchDraft();
+  const { resetDraft } = useLaunchDraft();
   const { showToast } = useToast();
-  const searchParams = useSearchParams();
-  const token = searchParams.get("token");
-  const tx = searchParams.get("tx");
-  const indexed = searchParams.get("indexed") === "1";
-  const txUrl = tx ? getTransactionExplorerUrl(tx, 4663) : undefined;
 
   return <AppShell footer={false}><div className="success-page section-shell">
-    <div className="success-orbit"><span><Icon name={tx ? "check" : "lock"} size={34} /></span><i /><i /></div>
-    <span className="eyebrow">{indexed ? "Indexed on Robinhood Chain" : tx ? "Confirmed on Robinhood Chain" : "Launch not confirmed"}</span>
-    <h1>{tx ? <>Your launch is<br /><span>{indexed ? "indexed." : "confirmed."}</span></> : <>No confirmed<br /><span>launch found.</span></>}</h1>
-    <p>{tx ? <><strong>{draft.name || "Your token"}</strong> was confirmed by the factory. {indexed ? "The indexer has published the project." : "The project index is catching up; confirmation is based on the chain receipt."}</> : "This page only reports launches confirmed by the SPLIT factory. Return to review and submit the real transaction when a verified factory is configured."}</p>
-    {token ? <div className="success-summary glass-panel"><div><span>Token contract</span><strong><code>{token}</code> <CopyButton value={token} label="Copy token address" /></strong></div><div><span>Network</span><strong>Robinhood Chain</strong></div><div><span>Fee split</span><strong>{Object.values(draft.allocations).join(" / ")}</strong></div><div><span>Status</span><strong className={indexed ? "success-text" : ""}>{indexed ? "Indexed" : "Indexing"}</strong></div></div> : null}
-    <div className="success-actions">{txUrl ? <a className="button button-primary" href={txUrl} target="_blank" rel="noreferrer">View confirmed transaction <Icon name="external" /></a> : null}{token ? <a className="button button-outline" href={`https://robinhoodchain.blockscout.com/address/${token}`} target="_blank" rel="noreferrer">View token contract <Icon name="external" /></a> : null}<button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>
+    <div className="success-orbit"><span><Icon name="lock" size={34} /></span><i /><i /></div>
+    <span className="eyebrow">Pre-launch visual preview</span>
+    <h1>Token launching<br /><span>is disabled.</span></h1>
+    <p>SPLIT production contracts have not completed release approval or deployment. Query-string values are not treated as proof of a transaction. No launch was submitted from this preview.</p>
+    <div className="success-actions"><button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>
   </div></AppShell>;
 }

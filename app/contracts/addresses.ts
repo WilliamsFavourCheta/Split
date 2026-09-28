@@ -1,5 +1,8 @@
 import { isAddress, type Address } from "viem";
 
+/** Preview builds must never submit a production launch transaction. Enable only after explicit release approval. */
+export const productionLaunchEnabled = false;
+
 /** Intentionally unset until SPLIT's factory is deployed and independently verified. */
 export const splitFactoryAddresses: Partial<Record<4663 | 46630, Address>> = {
   4663: isAddress(process.env.NEXT_PUBLIC_SPLIT_FACTORY_MAINNET_ADDRESS || "")

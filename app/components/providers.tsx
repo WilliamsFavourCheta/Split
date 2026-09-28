@@ -32,6 +32,7 @@ type LaunchDraft = {
   telegram: string;
   discord: string;
   logoName: string;
+  logoDataUrl: string;
   supply: string;
   initialLiquidity: string;
   tokenSeedAmount: string;
@@ -51,6 +52,7 @@ const DEFAULT_DRAFT: LaunchDraft = {
   telegram: "",
   discord: "",
   logoName: "",
+  logoDataUrl: "",
   supply: "1000000000",
   initialLiquidity: "5",
   tokenSeedAmount: "1000000",
@@ -61,8 +63,49 @@ const DEFAULT_DRAFT: LaunchDraft = {
   allocations: { creator: 40, liquidity: 30, projectTreasury: 20, community: 10 },
 };
 
+function restoreLaunchDraft(serialized: string): LaunchDraft {
+  const parsed = JSON.parse(serialized) as Partial<LaunchDraft> & {
+    allocations?: Partial<LaunchDraft["allocations"]> & { treasury?: number };
+  };
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return DEFAULT_DRAFT;
+  const stringValue = <K extends keyof LaunchDraft>(key: K) =>
+    typeof parsed[key] === "string" ? parsed[key] as string : DEFAULT_DRAFT[key] as string;
+  const percent = (value: number | undefined, fallback: number) =>
+    typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 100 ? value : fallback;
+  const logoDataUrl = typeof parsed.logoDataUrl === "string"
+    && parsed.logoDataUrl.length <= 700_000
+    && /^data:image\/(?:webp|png|jpeg);base64,/i.test(parsed.logoDataUrl)
+    ? parsed.logoDataUrl
+    : "";
+  return {
+    name: stringValue("name"),
+    symbol: stringValue("symbol"),
+    description: stringValue("description"),
+    website: stringValue("website"),
+    twitter: stringValue("twitter"),
+    telegram: stringValue("telegram"),
+    discord: stringValue("discord"),
+    logoName: logoDataUrl ? stringValue("logoName") : "",
+    logoDataUrl,
+    supply: stringValue("supply"),
+    initialLiquidity: stringValue("initialLiquidity"),
+    tokenSeedAmount: stringValue("tokenSeedAmount"),
+    feeRate: stringValue("feeRate"),
+    quoteAsset: stringValue("quoteAsset"),
+    projectTreasuryAddress: stringValue("projectTreasuryAddress"),
+    communityAddress: stringValue("communityAddress"),
+    allocations: {
+      creator: percent(parsed.allocations?.creator, DEFAULT_DRAFT.allocations.creator),
+      liquidity: percent(parsed.allocations?.liquidity, DEFAULT_DRAFT.allocations.liquidity),
+      projectTreasury: percent(parsed.allocations?.projectTreasury ?? parsed.allocations?.treasury, DEFAULT_DRAFT.allocations.projectTreasury),
+      community: percent(parsed.allocations?.community, DEFAULT_DRAFT.allocations.community),
+    },
+  };
+}
+
 type LaunchContextValue = {
   draft: LaunchDraft;
+  draftHydrated: boolean;
   updateDraft: (patch: Partial<LaunchDraft>) => void;
   updateAllocation: (key: keyof LaunchDraft["allocations"], value: number) => void;
   resetDraft: () => void;
@@ -90,13 +133,11 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      const savedDraft = window.localStorage.getItem("split.launch-draft");
-      if (savedDraft) {
-        try {
-          setDraft({ ...DEFAULT_DRAFT, ...JSON.parse(savedDraft) });
-        } catch {
-          window.localStorage.removeItem("split.launch-draft");
-        }
+      try {
+        const savedDraft = window.localStorage.getItem("split.launch-draft");
+        if (savedDraft) setDraft(restoreLaunchDraft(savedDraft));
+      } catch {
+        // Continue with a fresh draft when browser storage is unavailable or corrupt.
       }
       setDraftHydrated(true);
     }, 0);
@@ -104,7 +145,10 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (draftHydrated) window.localStorage.setItem("split.launch-draft", JSON.stringify(draft));
+    if (draftHydrated) {
+      try { window.localStorage.setItem("split.launch-draft", JSON.stringify(draft)); }
+      catch { /* Keep the active draft usable even if browser storage is full or disabled. */ }
+    }
   }, [draft, draftHydrated]);
 
   const showToast = useCallback((message: string, tone: "default" | "success" | "error" = "default") => {
@@ -114,13 +158,14 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
 
   const launchValue = useMemo<LaunchContextValue>(() => ({
     draft,
+    draftHydrated,
     updateDraft: (patch) => setDraft((current) => ({ ...current, ...patch })),
     updateAllocation: (key, value) => setDraft((current) => ({
       ...current,
       allocations: { ...current.allocations, [key]: Math.max(0, Math.min(100, value || 0)) },
     })),
     resetDraft: () => setDraft(DEFAULT_DRAFT),
-  }), [draft]);
+  }), [draft, draftHydrated]);
 
   return (
     <QueryClientProvider client={getQueryClient()}>

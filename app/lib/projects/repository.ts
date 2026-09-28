@@ -1,10 +1,11 @@
-﻿import "server-only";
+import "server-only";
 import { isSupabaseConfigured, createServerSupabaseClient } from "../supabase/server";
 import type { DestinationType, ProjectStatus } from "../supabase/database.types";
 import { DEFAULT_SPLIT, type Allocation, type Token } from "../../data/mock";
 import { isAddress, zeroAddress } from "viem";
 import { splitHookAbi, splitLiquidityVaultAbi } from "../../contracts/abis";
 import { indexerClient, RH_MAINNET_CHAIN_ID } from "../indexer/evm-source";
+import { sqrtPriceX96ToEthPerToken } from "./price";
 
 export type ProjectListFilters = { query?: string; creatorAddress?: string; status?: ProjectStatus | "all"; limit?: number; offset?: number };
 export type IndexedProject = { id:string; chainId:number; tokenAddress:string; poolId:string|null; quoteAsset:string|null; creatorAddress:string; name:string; symbol:string; description:string; website:string; twitter:string; telegram:string; discord:string; status:ProjectStatus; launchedAt:string|null; verified:boolean; split:Allocation[]; metrics?: { marketCapUsd:string|null; volume24hUsd:string|null; liquidityUsd:string|null; holderCount:number|null } };
@@ -22,7 +23,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
   if (!isSupabaseConfigured) return { projects: [] as IndexedProject[], nextOffset: null, source: "unconfigured" as const };
   const client = createServerSupabaseClient();
   const limit = Math.min(Math.max(filters.limit ?? 24, 1), 100);
-  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,project_treasury_bps,community_bps,creator_destination,project_treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,website_url,x_url,telegram_url,discord_url)").eq("canonical", true).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
+  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,project_treasury_bps,community_bps,creator_destination,project_treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,logo_url,website_url,x_url,telegram_url,discord_url)").eq("canonical", true).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
   if (filters.status && filters.status !== "all") query = query.eq("status", filters.status);
   if (filters.creatorAddress) query = query.eq("creator_address", normalizeAddress(filters.creatorAddress));
   if (filters.query?.trim()) { const q = filters.query.trim().replaceAll(",", " "); query = query.or(`name.ilike.%${q}%,symbol.ilike.%${q}%,token_address.ilike.%${normalizeAddress(q)}%`); }
@@ -49,7 +50,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
     return {
       id:row.id, chainId:row.chain_id, tokenAddress:row.token_address, poolId:row.pool_id,
       quoteAsset:row.quote_asset, creatorAddress:row.creator_address, name:row.name, symbol:row.symbol,
-      description:metadata?.description ?? row.description ?? "", website:metadata?.website_url ?? row.website_url ?? "",
+      description:metadata?.description ?? row.description ?? "", logoUrl:metadata?.logo_url ?? row.logo_url ?? undefined, website:metadata?.website_url ?? row.website_url ?? "",
       twitter:metadata?.x_url ?? row.x_url ?? "", telegram:metadata?.telegram_url ?? row.telegram_url ?? "",
       discord:metadata?.discord_url ?? row.discord_url ?? "", status:row.status, launchedAt:row.launched_at,
       verified:row.verified, split,
@@ -60,7 +61,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
 }
 
 function displayUsd(value: string | null | undefined) {
-  return value === null || value === undefined ? "â€”" : `$${Number(value).toLocaleString()}`;
+  return value === null || value === undefined ? "-" : `$${Number(value).toLocaleString()}`;
 }
 
 function asToken(project: IndexedProject): Token {
@@ -72,9 +73,9 @@ function asToken(project: IndexedProject): Token {
     marketCap: displayUsd(project.metrics?.marketCapUsd),
     volume: displayUsd(project.metrics?.volume24hUsd),
     liquidity: displayUsd(project.metrics?.liquidityUsd),
-    holders: project.metrics?.holderCount?.toLocaleString() ?? "â€”",
-    price: "â€”",
-    launched: project.launchedAt ? new Date(project.launchedAt).toLocaleDateString() : "â€”",
+    holders: project.metrics?.holderCount?.toLocaleString() ?? "-",
+    price: "-",
+    launched: project.launchedAt ? new Date(project.launchedAt).toLocaleDateString() : "-",
     color: "#9b64ff",
     description: project.description,
     website: project.website,
@@ -97,7 +98,7 @@ export async function getProject(address: string) {
   // Do not select raw numeric(78,0) project/metric columns from base tables:
   // PostgREST serializes those as JSON numbers. Read financial raw values only
   // from the *_exact views, which cast them to decimal text in SQL.
-  const { data, error } = await client.from("projects").select("id,chain_id,token_address,creator_address,name,symbol,description,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("canonical", true).eq("token_address", normalizeAddress(address)).maybeSingle();
+  const { data, error } = await client.from("projects").select("id,chain_id,token_address,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("canonical", true).eq("token_address", normalizeAddress(address)).maybeSingle();
   if (error) {
     if (isProtocolIndexMigrationMissing(error.message)) return null;
     throw new Error(`Could not load indexed project: ${error.message}`);
@@ -130,14 +131,15 @@ export async function getProjectToken(address: string): Promise<Token | null> {
     name: project.name,
     ticker: project.symbol,
     status: status === "pending" ? "upcoming" : status,
-    marketCap: metrics?.market_cap_usd ? `$${Number(metrics.market_cap_usd).toLocaleString()}` : "â€”",
-    volume: metrics?.volume_24h_usd ? `$${Number(metrics.volume_24h_usd).toLocaleString()}` : "â€”",
-    liquidity: metrics?.liquidity_usd ? `$${Number(metrics.liquidity_usd).toLocaleString()}` : "â€”",
-    holders: metrics?.holder_count?.toLocaleString() ?? "â€”",
-    price: "â€”",
-    launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "â€”",
+    marketCap: metrics?.market_cap_usd ? `$${Number(metrics.market_cap_usd).toLocaleString()}` : "-",
+    volume: metrics?.volume_24h_usd ? `$${Number(metrics.volume_24h_usd).toLocaleString()}` : "-",
+    liquidity: metrics?.liquidity_usd ? `$${Number(metrics.liquidity_usd).toLocaleString()}` : "-",
+    holders: metrics?.holder_count?.toLocaleString() ?? "-",
+    price: "-",
+    launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "-",
     color: "#9b64ff",
     description: metadata?.description ?? project.description ?? "",
+    logoUrl: metadata?.logo_url ?? project.logo_url ?? undefined,
     website: metadata?.website_url ?? project.website_url ?? "",
     twitter: metadata?.x_url ?? project.x_url ?? "",
     telegram: metadata?.telegram_url ?? project.telegram_url ?? "",
@@ -145,6 +147,32 @@ export async function getProjectToken(address: string): Promise<Token | null> {
     owner: project.creator_address,
     split,
   };
+}
+
+export async function getProjectPriceHistory(address: string) {
+  if (!isSupabaseConfigured) return { status: "unconfigured" as const, snapshots: [] as Array<{ priceEth: number; snapshotAt: string }> };
+  const project = await getProject(address);
+  if (!project) return { status: "ready" as const, snapshots: [] as Array<{ priceEth: number; snapshotAt: string }> };
+  const { data, error } = await createServerSupabaseClient()
+    .from("project_price_events_exact")
+    .select("sqrt_price_x96,block_timestamp,block_number,log_index")
+    .eq("project_id", project.id)
+    .eq("chain_id", project.chain_id)
+    .order("block_number", { ascending: false })
+    .order("log_index", { ascending: false })
+    .limit(1_500);
+  if (error && (/relation .*project_price_events_exact.*does not exist/i.test(error.message) || /project_price_events_exact.*schema cache/i.test(error.message))) {
+    return { status: "migration-required" as const, snapshots: [] as Array<{ priceEth: number; snapshotAt: string }> };
+  }
+  if (error) throw new Error(`Could not load indexed price history: ${error.message}`);
+  const snapshots = (data ?? []).flatMap((row) => {
+    if (!row.block_timestamp) return [];
+    const priceEth = sqrtPriceX96ToEthPerToken(row.sqrt_price_x96);
+    return priceEth !== null
+      ? [{ priceEth, snapshotAt: row.block_timestamp }]
+      : [];
+  });
+  return { status: "ready" as const, snapshots: snapshots.reverse() };
 }
 
 export async function getProjectFeeHistory(address: string, limit = 50, offset = 0) {

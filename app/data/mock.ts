@@ -16,6 +16,7 @@ export type Token = {
   launched: string;
   color: string;
   description: string;
+  logoUrl?: string;
   website: string;
   twitter: string;
   telegram: string;
