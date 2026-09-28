@@ -241,8 +241,9 @@ export function createHeroScene(options: Options) {
     const state = feeJourney(reduced ? 0 : progress);
     // Camera response has inertia; the model never follows the pointer position.
     assembly.rotation.set(-dampedPointer.y * .065, dampedPointer.x * .095 - (mobile ? .025 : .085), -.015);
+    assembly.position.x = mobile ? -.36 : 0;
     assembly.position.y = Math.sin(elapsed * .45) * .025 + state.exit * (mobile ? 1 : 2.3);
-    const distance = mobile ? 11.5 : Math.max(13.6, 19 / camera.aspect);
+    const distance = mobile ? Math.max(12.1, 10.7 / camera.aspect) : Math.max(13.6, 19 / camera.aspect);
     camera.position.set(-dampedPointer.x * .1, .25 + dampedPointer.y * .08, distance - state.push * (mobile ? .2 : 1));
     camera.lookAt(mobile ? -.15 : 0, .2 - state.exit * .8, 0); camera.updateMatrixWorld();
     orb.group.position.copy(incoming.getPoint(state.incoming));
