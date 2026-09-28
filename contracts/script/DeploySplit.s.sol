@@ -7,6 +7,7 @@ import {SplitFactory} from "../src/SplitFactory.sol";
 import {SplitHook} from "../src/SplitHook.sol";
 import {SplitFeeRouter} from "../src/SplitFeeRouter.sol";
 import {SplitLiquidityVault} from "../src/SplitLiquidityVault.sol";
+import {SplitSwapExecutor} from "../src/SplitSwapExecutor.sol";
 
 interface VmDeploy {
     function envAddress(string calldata key) external view returns (address);
@@ -31,7 +32,13 @@ contract DeploySplit {
 
     function run()
         external
-        returns (SplitFactory factory, SplitHook hook, SplitFeeRouter router, SplitLiquidityVault vault)
+        returns (
+            SplitFactory factory,
+            SplitHook hook,
+            SplitFeeRouter router,
+            SplitLiquidityVault vault,
+            SplitSwapExecutor swapExecutor
+        )
     {
         // Reject unsupported chains before reading any environment addresses.
         if (block.chainid == 46630) revert TestnetPoolManagerNotOfficial();
@@ -66,10 +73,14 @@ contract DeploySplit {
         SplitStackDeployer deployer = new SplitStackDeployer(manager, protocolTreasury);
         bytes32 salt = _findHookSalt(manager, address(deployer));
         (factory, hook, router, vault) = deployer.deploy(salt);
+        swapExecutor = new SplitSwapExecutor(factory);
         if (
             address(factory.poolManager()) != address(manager) || factory.protocolTreasury() != protocolTreasury
                 || router.protocolTreasury() != protocolTreasury || address(hook) != address(factory.hook())
                 || address(vault) != address(factory.liquidityVault()) || !deployer.deployed()
+                || address(swapExecutor.factory()) != address(factory)
+                || address(swapExecutor.poolManager()) != address(manager)
+                || address(swapExecutor.hook()) != address(hook)
         ) revert DeploymentVerificationFailed();
         vm.stopBroadcast();
     }

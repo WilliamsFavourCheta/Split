@@ -6,7 +6,7 @@ This document describes the contracts currently in this repository. It is not a 
 
 The pinned local dependency is Uniswap `v4-core` **1.0.2** (Solidity 0.8.26), installed from the package lock. No v4-periphery dependency is required by the current contracts. The implementation uses the pinned core `Hooks`, `PoolManager`, `Currency`, `PoolKey`, `PoolId`, and `BalanceDelta` code as its source of truth.
 
-The V1.1 candidate stack consists of `SplitFactory`, fixed-supply `SplitToken`, `SplitHook`, `SplitFeeRouter`, and `SplitLiquidityVault`. The global Protocol Treasury is immutable in the factory/router; each pool's Project Treasury destination and its BPS share are immutable configuration. There is no owner or post-deployment admin role, pause, split setter, mint authority, or fund-rescue function.
+The V1.1 candidate stack consists of `SplitFactory`, fixed-supply `SplitToken`, `SplitHook`, `SplitFeeRouter`, and `SplitLiquidityVault`. `SplitSwapExecutor` is deployed separately after the factory and offers exact-input ETH/token swaps only through the registered official pool. The global Protocol Treasury is immutable in the factory/router; each pool's Project Treasury destination and its BPS share are immutable configuration. There is no owner or post-deployment admin role, pause, split setter, mint authority, or fund-rescue function.
 
 V1 uses native ETH (`Currency.wrap(address(0))`) as the sole quote currency. The project token sorts as currency1. The factory creates a standard 1,000,000,000-token ERC-20 with no post-launch minting or transfer tax, initializes a 30-basis-point v4 pool, and seeds it with the creator's native ETH and token amounts. The launch supplies the initial ratio directly; there is no bonding curve or graduation process.
 
@@ -40,7 +40,7 @@ The indexer automatically replays its configured overlap while the saved checkpo
 
 ## Hook deployment
 
-`contracts/script/DeploySplit.s.sol` checks the manager has code, rejects RH testnet (46630), verifies the exact official RH mainnet PoolManager address (`0x8366a39cc670b4001a1121b8f6a443a643e40951`), and additionally requires `ALLOW_RH_MAINNET_DEPLOYMENT=true` on chain 4663. Local Anvil chains 31337/1337 are accepted for deployment simulations. It predicts the mutually-referencing stack, searches for a CREATE2 salt in the Forge script simulation, and passes that salt to the on-chain deployer, which verifies `0x2044` permissions. All earlier 0x44 salt/address predictions are stale for this candidate. No live deployment is authorized by this document.
+`contracts/script/DeploySplit.s.sol` checks the manager has code, rejects RH testnet (46630), verifies the exact official RH mainnet PoolManager address (`0x8366a39cc670b4001a1121b8f6a443a643e40951`), and additionally requires `ALLOW_RH_MAINNET_DEPLOYMENT=true` on chain 4663. Local Anvil chains 31337/1337 are accepted for deployment simulations. It predicts the mutually-referencing stack, searches for a CREATE2 salt in the Forge script simulation, and passes that salt to the on-chain deployer, which verifies `0x2044` permissions. The script then deploys `SplitSwapExecutor` and verifies its immutable factory/manager/hook references. All earlier 0x44 salt/address predictions are stale for this candidate. No live deployment is authorized by this document.
 
 The official-compatible RH testnet v4 PoolManager is not verified, so the frontend factory address remains unset there. Use pinned local v4 tests/Anvil now; run an RH mainnet fork test only after providing a pinned block and RPC. Do not substitute an unofficial manager.
 
@@ -50,7 +50,7 @@ Before a Robinhood mainnet script run, operators must independently compare `SPL
 
 ## Application integration and limitations
 
-The launch flow submits a factory transaction only when a verified factory address is configured for the connected chain. The frontend waits for the receipt and launch event, then polls indexed project data; it does not create a Supabase-only launch. Explore, token, account, and manage pages consume indexed chain data and show empty/not-indexed states rather than presenting demo launches as real state. Offchain metadata writes remain disabled pending wallet-signature authentication.
+The launch flow submits a factory transaction only when the explicit production release gate and verified addresses are configured for the connected chain. The frontend waits for the receipt and launch event, then polls indexed project data; it does not create a Supabase-only launch. After indexing, a creator signature authorizes bounded image/metadata storage through a server-only endpoint. Explore, token, account, and manage pages consume indexed chain data and show empty/not-indexed states rather than presenting demo launches as real state. A separate trading release gate and verified executor address enable the token-page buy/sell interface. Quotes come from the official Robinhood v4 Quoter; the executor reconstructs the exact factory pool and enforces minimum output and deadline onchain. A quote is an estimate and can change before inclusion.
 
 V1 limitations:
 

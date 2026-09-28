@@ -7,6 +7,10 @@ export const erc20Abi = [
 
 export const splitFactoryAbi = [
   {
+    type: "function", name: "poolForToken", stateMutability: "view",
+    inputs: [{ name: "token", type: "address" }], outputs: [{ name: "poolId", type: "bytes32" }],
+  },
+  {
     type: "function",
     name: "tokenForPool",
     stateMutability: "view",

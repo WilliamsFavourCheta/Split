@@ -8,7 +8,7 @@ import { indexerClient, RH_MAINNET_CHAIN_ID } from "../indexer/evm-source";
 import { sqrtPriceX96ToEthPerToken } from "./price";
 
 export type ProjectListFilters = { query?: string; creatorAddress?: string; status?: ProjectStatus | "all"; limit?: number; offset?: number };
-export type IndexedProject = { id:string; chainId:number; tokenAddress:string; poolId:string|null; quoteAsset:string|null; creatorAddress:string; name:string; symbol:string; description:string; website:string; twitter:string; telegram:string; discord:string; status:ProjectStatus; launchedAt:string|null; verified:boolean; split:Allocation[]; metrics?: { marketCapUsd:string|null; volume24hUsd:string|null; liquidityUsd:string|null; holderCount:number|null } };
+export type IndexedProject = { id:string; chainId:number; tokenAddress:string; poolId:string|null; quoteAsset:string|null; creatorAddress:string; name:string; symbol:string; description:string; logoUrl?:string; website:string; twitter:string; telegram:string; discord:string; status:ProjectStatus; launchedAt:string|null; verified:boolean; split:Allocation[]; metrics?: { marketCapUsd:string|null; volume24hUsd:string|null; liquidityUsd:string|null; holderCount:number|null } };
 
 const normalizeAddress = (value: string) => value.trim().toLowerCase();
 const isProtocolIndexMigrationMissing = (message: string) =>
@@ -23,7 +23,7 @@ export async function getProjects(filters: ProjectListFilters = {}) {
   if (!isSupabaseConfigured) return { projects: [] as IndexedProject[], nextOffset: null, source: "unconfigured" as const };
   const client = createServerSupabaseClient();
   const limit = Math.min(Math.max(filters.limit ?? 24, 1), 100);
-  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,project_treasury_bps,community_bps,creator_destination,project_treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,logo_url,website_url,x_url,telegram_url,discord_url)").eq("canonical", true).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
+  let query = client.from("projects").select("id,chain_id,token_address,pool_id,quote_asset,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,fee_configs(creator_bps,liquidity_bps,project_treasury_bps,community_bps,creator_destination,project_treasury_destination,community_destination),project_metrics(market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(description,logo_url,website_url,x_url,telegram_url,discord_url)").eq("chain_id", RH_MAINNET_CHAIN_ID).eq("canonical", true).not("pool_id", "is", null).not("launch_tx_hash", "is", null).order("launched_at", { ascending:false, nullsFirst:false }).range(filters.offset ?? 0, (filters.offset ?? 0) + limit);
   if (filters.status && filters.status !== "all") query = query.eq("status", filters.status);
   if (filters.creatorAddress) query = query.eq("creator_address", normalizeAddress(filters.creatorAddress));
   if (filters.query?.trim()) { const q = filters.query.trim().replaceAll(",", " "); query = query.or(`name.ilike.%${q}%,symbol.ilike.%${q}%,token_address.ilike.%${normalizeAddress(q)}%`); }
@@ -67,6 +67,7 @@ function displayUsd(value: string | null | undefined) {
 function asToken(project: IndexedProject): Token {
   return {
     address: project.tokenAddress,
+    poolId: project.poolId ?? undefined,
     name: project.name,
     ticker: project.symbol,
     status: project.status === "pending" ? "upcoming" : project.status,
@@ -78,6 +79,7 @@ function asToken(project: IndexedProject): Token {
     launched: project.launchedAt ? new Date(project.launchedAt).toLocaleDateString() : "-",
     color: "#9b64ff",
     description: project.description,
+    logoUrl: project.logoUrl,
     website: project.website,
     twitter: project.twitter,
     telegram: project.telegram,
@@ -89,16 +91,19 @@ function asToken(project: IndexedProject): Token {
 
 export async function getProjectTokens(filters: ProjectListFilters = {}) {
   const result = await getProjects(filters);
-  return { ...result, tokens: result.projects.filter((project) => project.split.length === 4).map(asToken) };
+  return { ...result, tokens: result.projects.filter((project) =>
+    project.split.length === 4 && isAddress(project.tokenAddress) && /^0x[0-9a-f]{64}$/.test(project.poolId ?? "")
+  ).map(asToken) };
 }
 
 export async function getProject(address: string) {
+  if (!isAddress(address)) return null;
   if (!isSupabaseConfigured) return null;
   const client = createServerSupabaseClient();
   // Do not select raw numeric(78,0) project/metric columns from base tables:
   // PostgREST serializes those as JSON numbers. Read financial raw values only
   // from the *_exact views, which cast them to decimal text in SQL.
-  const { data, error } = await client.from("projects").select("id,chain_id,token_address,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("canonical", true).eq("token_address", normalizeAddress(address)).maybeSingle();
+  const { data, error } = await client.from("projects").select("id,chain_id,token_address,pool_id,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("chain_id", RH_MAINNET_CHAIN_ID).eq("canonical", true).not("pool_id", "is", null).not("launch_tx_hash", "is", null).eq("token_address", normalizeAddress(address)).maybeSingle();
   if (error) {
     if (isProtocolIndexMigrationMissing(error.message)) return null;
     throw new Error(`Could not load indexed project: ${error.message}`);
@@ -115,7 +120,7 @@ export async function getProjectToken(address: string): Promise<Token | null> {
   const metrics = Array.isArray(metricsRaw) ? metricsRaw[0] : metricsRaw;
   const metadataRaw = project.project_metadata;
   const metadata = Array.isArray(metadataRaw) ? metadataRaw[0] : metadataRaw;
-  if (!fee) return null;
+  if (!fee || !/^0x[0-9a-f]{64}$/.test(project.pool_id ?? "")) return null;
   const status = project.status as ProjectStatus;
   const split = DEFAULT_SPLIT.map((item) => ({
     ...item,
@@ -128,6 +133,7 @@ export async function getProjectToken(address: string): Promise<Token | null> {
   }));
   return {
     address: project.token_address,
+    poolId: project.pool_id ?? undefined,
     name: project.name,
     ticker: project.symbol,
     status: status === "pending" ? "upcoming" : status,

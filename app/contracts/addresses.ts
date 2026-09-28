@@ -1,8 +1,5 @@
 import { isAddress, type Address } from "viem";
 
-/** Preview builds must never submit a production launch transaction. Enable only after explicit release approval. */
-export const productionLaunchEnabled = false;
-
 /** Intentionally unset until SPLIT's factory is deployed and independently verified. */
 export const splitFactoryAddresses: Partial<Record<4663 | 46630, Address>> = {
   4663: isAddress(process.env.NEXT_PUBLIC_SPLIT_FACTORY_MAINNET_ADDRESS || "")
@@ -32,6 +29,15 @@ export const splitLiquidityVaultAddresses: Partial<Record<4663 | 46630, Address>
     : undefined,
   46630: undefined,
 };
+
+export const splitSwapExecutorAddress = isAddress(process.env.NEXT_PUBLIC_SPLIT_SWAP_EXECUTOR_MAINNET_ADDRESS || "")
+  ? process.env.NEXT_PUBLIC_SPLIT_SWAP_EXECUTOR_MAINNET_ADDRESS as Address : undefined;
+export const productionTradingEnabled = process.env.NEXT_PUBLIC_ENABLE_PRODUCTION_TRADING === "true"
+  && Boolean(splitSwapExecutorAddress && splitFactoryAddresses[4663] && splitHookAddresses[4663]);
+
+/** Explicit release gate. A missing verified stack keeps launch writes disabled. */
+export const productionLaunchEnabled = process.env.NEXT_PUBLIC_ENABLE_PRODUCTION_LAUNCH === "true"
+  && Boolean(splitFactoryAddresses[4663] && splitHookAddresses[4663] && splitFeeRouterAddresses[4663] && splitLiquidityVaultAddresses[4663]);
 
 export function getSplitFactoryAddress(chainId: number): Address | undefined {
   return chainId === 4663 || chainId === 46630 ? splitFactoryAddresses[chainId] : undefined;

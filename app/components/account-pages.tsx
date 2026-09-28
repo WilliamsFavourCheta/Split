@@ -1,18 +1,21 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { formatUnits, type Address } from "viem";
-import { useReadContract, useWaitForTransactionReceipt, useWriteContract } from "wagmi";
-import { EXPLORER_URL, explorerTx, ROUTING_HISTORY, shortAddress, TOKENS, type Token } from "../data/mock";
+import { useReadContract, useWaitForTransactionReceipt, useWalletClient, useWriteContract } from "wagmi";
+import { EXPLORER_URL, explorerTx, shortAddress, type Token } from "../data/mock";
 import { Icon } from "./icons";
 import { useToast, useWallet } from "./providers";
 import { AppShell, CopyButton, StatusBadge, WalletActionButton } from "./shell";
-import { FeeBars, FlowDiagram, PriceChart } from "./visuals";
+import { FlowDiagram } from "./visuals";
 import { Erc20BalanceLookup } from "./erc20-balance-lookup";
 import { targetChainId } from "../web3/chains";
 import { splitFeeRouterAbi } from "../contracts/abis";
 import { splitFeeRouterAddresses } from "../contracts/addresses";
+import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 
 type DashboardTab = "overview" | "launches" | "fees";
 type BalanceGroup = { currency: string; rawAmount: string; count: number; destinationType?: "creator" | "liquidity" | "project_treasury" | "protocol_treasury" | "community" };
@@ -72,30 +75,13 @@ export function DashboardOverview() { return <RealDashboardOverview />; }
 export function DashboardLaunches() { return <RealDashboardLaunches />; }
 export function DashboardFees() { return <RealDashboardFees />; }
 
-export function LegacyDashboardOverview() {
-  return <RealDashboardOverview />;
-}
-
 function StatCard({ label, value, icon, action }: { label: string; value: string; icon: "layers" | "chart" | "wallet" | "bars"; action?: React.ReactNode }) {
   return <div className="stat-card glass-panel"><div><span>{label}</span><Icon name={icon} /></div><strong>{value}</strong>{action}</div>;
 }
 
-function LaunchTable({ tokens }: { tokens: Token[] }) {
-  return <div className="launch-table glass-panel"><div className="launch-table-head"><span>Token</span><span>Status</span><span>Market cap</span><span>Volume</span><span>Fees generated</span><span>Your allocation</span><span>Actions</span></div>{tokens.map((token, index) => <div className="launch-table-row" key={token.address}><div className="table-token"><span className="token-glyph" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}</span><span><strong>{token.name}</strong><small>${token.ticker}</small></span></div><StatusBadge status={token.status} /><span data-label="Market cap">{token.marketCap}</span><span data-label="Volume">{token.volume}</span><span data-label="Fees generated">{index === 0 ? "$840" : index === 1 ? "$320" : "-"}</span><span className="allocation-label" data-label="Your allocation">40% creator</span><div className="table-actions"><Link href={`/manage/${token.address}`}>Manage</Link><Link href={`/token/${token.address}`}>View</Link></div></div>)}</div>;
-}
-
-export function LegacyDashboardLaunches() {
-  return <DashboardFrame active="launches"><section className="dashboard-section standalone"><div className="section-heading"><div><span className="eyebrow">Portfolio</span><h2>My launches</h2><p>Projects owned by the connected wallet.</p></div><Link className="button button-primary" href="/launch/details">New launch <Icon name="arrow" /></Link></div><LaunchTable tokens={TOKENS.slice(0, 3)} /></section></DashboardFrame>;
-}
-
-export function LegacyDashboardFees() {
-  const [period, setPeriod] = useState("30D");
-  return <DashboardFrame active="fees"><section className="analytics-grid"><div className="glass-panel analytics-chart"><div className="section-heading"><div><span className="eyebrow">Fees routed over time</span><h2>$28,420</h2><p><span className="success-text">+18.4%</span> vs previous period</p></div><div className="period-tabs">{["7D", "30D", "ALL"].map((item) => <button className={period === item ? "active" : ""} onClick={() => setPeriod(item)} key={item}>{item}</button>)}</div></div><PriceChart period={period} /></div><div className="glass-panel analytics-breakdown"><span className="eyebrow">Destination breakdown</span><h2>Fee allocation</h2><FeeBars allocations={TOKENS[0].split} />{TOKENS[0].split.map((item) => <div className="analytics-row" key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><strong>${(28420 * item.value / 100).toLocaleString()}</strong></div>)}</div></section><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Recent activity</span><h2>Routing events</h2></div><a href={EXPLORER_URL} target="_blank" rel="noreferrer">Open explorer <Icon name="external" /></a></div><div className="history-list">{ROUTING_HISTORY.map((row) => <div className="history-row" key={row.hash}><span className="history-icon"><Icon name="wallet" /></span><strong>{row.amount}</strong><span className="history-arrow">&rarr;</span><strong>{row.destination}</strong><small>{row.time}</small><a href={explorerTx(row.hash)} target="_blank" rel="noreferrer">View tx <Icon name="external" size={12} /></a></div>)}</div></section></DashboardFrame>;
-}
-
 function RealLaunchTable({ tokens }: { tokens: Token[] }) {
   if (!tokens.length) return <div className="empty-state glass-panel"><p>No launches from this connected wallet are indexed.</p></div>;
-  return <div className="launch-table glass-panel"><div className="launch-table-head"><span>Token</span><span>Status</span><span>Market cap</span><span>Volume</span><span>Fee split</span><span>Creator allocation</span><span>Actions</span></div>{tokens.map((token) => <div className="launch-table-row" key={token.address}><div className="table-token"><span className="token-glyph" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}</span><span><strong>{token.name}</strong><small>${token.ticker}</small></span></div><StatusBadge status={token.status} /><span data-label="Market cap">{token.marketCap}</span><span data-label="Volume">{token.volume}</span><span data-label="Fee split">{token.split.map((item) => item.value).join(" / ")}</span><span className="allocation-label" data-label="Creator allocation">{token.split.find((item) => item.key === "creator")?.value ?? 0}% creator</span><div className="table-actions"><Link href={`/manage/${token.address}`}>Manage</Link><Link href={`/token/${token.address}`}>View</Link></div></div>)}</div>;
+  return <div className="launch-table glass-panel"><div className="launch-table-head"><span>Token</span><span>Status</span><span>Market cap</span><span>Volume</span><span>Fee split</span><span>Creator allocation</span><span>Actions</span></div>{tokens.map((token) => <div className="launch-table-row" key={token.address}><div className="table-token"><span className="token-glyph" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}{token.logoUrl ? <Image className="token-logo-image" src={token.logoUrl} width={42} height={42} unoptimized alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : null}</span><span><strong>{token.name}</strong><small>${token.ticker}</small></span></div><StatusBadge status={token.status} /><span data-label="Market cap">{token.marketCap}</span><span data-label="Volume">{token.volume}</span><span data-label="Fee split">{token.split.map((item) => item.value).join(" / ")}</span><span className="allocation-label" data-label="Creator allocation">{token.split.find((item) => item.key === "creator")?.value ?? 0}% creator</span><div className="table-actions"><Link href={`/manage/${token.address}`}>Manage</Link><Link href={`/token/${token.address}`}>View</Link></div></div>)}</div>;
 }
 
 export function RealDashboardOverview() {
@@ -215,19 +201,6 @@ export function IndexedDashboardFees() {
 type ManageTab = "overview" | "routing" | "profile" | "transactions";
 type ManageRouteEvent = { id: string; tx_hash: string; block_number: number; destination_type: string; raw_amount: string; currency: string | null; token_decimals: number | null };
 
-export function LegacyManageProjectPage({ token }: { token: Token }) {
-  const wallet = useWallet();
-  const [tab, setTab] = useState<ManageTab>("routing");
-  const { showToast } = useToast();
-  const [profile, setProfile] = useState({ description: token.description, website: token.website, twitter: token.twitter });
-  const authorized = wallet.status === "connected" && wallet.address?.toLowerCase() === token.owner.toLowerCase();
-
-  if (wallet.status !== "connected") return <AppShell><div className="section-shell page-body"><div className="connect-gate glass-panel"><span className="wallet-option-icon"><Icon name="lock" /></span><span className="eyebrow">Creator controls</span><h1>{wallet.status === "wrong-network" ? `Switch to ${wallet.targetChainName}` : "Connect an authorized wallet"}</h1><p>Project controls are visible only to the configured owner.</p><WalletActionButton /></div></div></AppShell>;
-  if (!authorized) return <AppShell><div className="section-shell page-body"><div className="connect-gate glass-panel error-gate"><span className="wallet-option-icon"><Icon name="lock" /></span><span className="eyebrow">Access denied</span><h1>This wallet cannot manage {token.name}</h1><p>Connected as {shortAddress(wallet.address ?? "")}. Switch to the project owner wallet to continue.</p><Link className="button button-outline" href={`/token/${token.address}`}>Return to token</Link></div></div></AppShell>;
-
-  return <AppShell><div className="section-shell page-body manage-page"><div className="manage-breadcrumb"><Link href="/dashboard">Dashboard</Link><span>/</span><Link href={`/token/${token.address}`}>{token.name} ${token.ticker}</Link></div><section className="manage-identity"><div><span className="token-glyph token-glyph-large" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}</span><div><h1>{token.name}</h1><span>${token.ticker}</span><StatusBadge status={token.status} /><div className="contract-line"><code>{shortAddress(token.address)}</code><CopyButton value={token.address} /></div></div></div><span className="admin-badge">Project admin</span></section><nav className="manage-tabs">{(["overview", "routing", "profile", "transactions"] as ManageTab[]).map((item) => <button className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item === "routing" ? "Fee Routing" : item === "profile" ? "Project Profile" : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>{tab === "overview" ? <ManageOverview token={token} /> : tab === "routing" ? <ManageRouting token={token} /> : tab === "profile" ? <section className="profile-form glass-panel"><span className="eyebrow">Editable metadata</span><h2>Project profile</h2><p>Profile fields are offchain metadata. Fee routing remains immutable.</p><label>Description<textarea value={profile.description} onChange={(e) => setProfile({ ...profile, description: e.target.value })} /></label><label>Website<input value={profile.website} onChange={(e) => setProfile({ ...profile, website: e.target.value })} /></label><label>X / Twitter<input value={profile.twitter} onChange={(e) => setProfile({ ...profile, twitter: e.target.value })} /></label><button className="button button-primary" onClick={() => showToast("Project profile saved locally", "success")}>Save profile</button></section> : <section className="dashboard-section standalone"><div className="section-heading"><div><span className="eyebrow">Project activity</span><h2>Transactions</h2></div><a href={`${EXPLORER_URL}/address/${token.address}?tab=txs`} target="_blank" rel="noreferrer">View all <Icon name="external" /></a></div><div className="history-list">{ROUTING_HISTORY.map((row) => <div className="history-row" key={row.hash}><span className="history-icon"><Icon name="wallet" /></span><strong>{row.amount}</strong><span className="history-arrow">&rarr;</span><strong>{row.destination}</strong><small>{row.time}</small><a href={explorerTx(row.hash)} target="_blank" rel="noreferrer">View tx <Icon name="external" size={12} /></a></div>)}</div></section>}</div></AppShell>;
-}
-
 export function ManageProjectPage({ token, routingEvents = [] }: { token: Token; routingEvents?: ManageRouteEvent[] }) {
   const wallet = useWallet();
   const [tab, setTab] = useState<ManageTab>("routing");
@@ -235,20 +208,41 @@ export function ManageProjectPage({ token, routingEvents = [] }: { token: Token;
   if (wallet.status !== "connected") return <AppShell><div className="section-shell page-body"><div className="connect-gate glass-panel"><span className="wallet-option-icon"><Icon name="lock" /></span><span className="eyebrow">Creator controls</span><h1>{wallet.status === "wrong-network" ? `Switch to ${wallet.targetChainName}` : "Connect an authorized wallet"}</h1><p>Project access is verified against the indexed creator address.</p><WalletActionButton /></div></div></AppShell>;
   if (!authorized) return <AppShell><div className="section-shell page-body"><div className="connect-gate glass-panel error-gate"><span className="wallet-option-icon"><Icon name="lock" /></span><span className="eyebrow">Access denied</span><h1>This wallet cannot manage {token.name}</h1><p>Connected as {shortAddress(wallet.address ?? "")}. Switch to the project creator wallet to continue.</p><Link className="button button-outline" href={`/token/${token.address}`}>Return to token</Link></div></div></AppShell>;
 
-  return <AppShell><div className="section-shell page-body manage-page"><div className="manage-breadcrumb"><Link href="/dashboard">Dashboard</Link><span>/</span><Link href={`/token/${token.address}`}>{token.name} ${token.ticker}</Link></div><section className="manage-identity"><div><span className="token-glyph token-glyph-large" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}</span><div><h1>{token.name}</h1><span>${token.ticker}</span><StatusBadge status={token.status} /><div className="contract-line"><code>{shortAddress(token.address)}</code><CopyButton value={token.address} /></div></div></div><span className="admin-badge">Creator</span></section><nav className="manage-tabs">{(["overview", "routing", "profile", "transactions"] as ManageTab[]).map((item) => <button className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item === "routing" ? "Fee Routing" : item === "profile" ? "Project Profile" : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
+  return <AppShell><div className="section-shell page-body manage-page"><div className="manage-breadcrumb"><Link href="/dashboard">Dashboard</Link><span>/</span><Link href={`/token/${token.address}`}>{token.name} ${token.ticker}</Link></div><section className="manage-identity"><div><span className="token-glyph token-glyph-large" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}{token.logoUrl ? <Image className="token-logo-image" src={token.logoUrl} width={70} height={70} unoptimized alt="" /> : null}</span><div><h1>{token.name}</h1><span>${token.ticker}</span><StatusBadge status={token.status} /><div className="contract-line"><code>{shortAddress(token.address)}</code><CopyButton value={token.address} /></div></div></div><span className="admin-badge">Creator</span></section><nav className="manage-tabs">{(["overview", "routing", "profile", "transactions"] as ManageTab[]).map((item) => <button className={tab === item ? "active" : ""} onClick={() => setTab(item)} key={item}>{item === "routing" ? "Fee Routing" : item === "profile" ? "Project Profile" : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
     {tab === "overview" ? <section className="manage-overview-grid"><div className="stat-grid"><StatCard label="Market cap  /  indexed" value={token.marketCap} icon="chart" /><StatCard label="Volume  /  cached" value={token.volume} icon="bars" /><StatCard label="Fee allocations" value="Open fee analytics" icon="wallet" /><StatCard label="Holders  /  indexed" value={token.holders} icon="layers" /></div><div className="glass-panel manage-summary"><span className="eyebrow">Protocol state</span><h2>Split configuration is immutable.</h2><p>Swap fees accrue first. Anyone can permissionlessly process accrued fees into recipient claimable balances and the LiquidityVault. A recipient transfer failure affects only that recipient&apos;s separate claim.</p></div></section> : null}
     {tab === "routing" ? <div className="manage-routing-grid"><div><section className="routing-config glass-panel"><div className="form-section-head"><div><span className="eyebrow">Indexed onchain configuration</span><h2>LOCKED ONCHAIN</h2></div><span className="success-text"><span className="status-dot" />Immutable</span></div><FlowDiagram allocations={token.split} /><div className="routing-address-table"><div><span>Destination</span><span>Share</span><span>Address</span><span>Type</span></div>{token.split.map((item) => <div key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><strong>{item.value}%</strong><span><code>{item.address ?? "Unavailable"}</code>{item.address ? <CopyButton value={item.address} /> : null}</span><span>{item.type}</span></div>)}</div></section><div className="locked-callout"><Icon name="lock" /><div><strong>Locked onchain</strong><p>No creator, protocol owner, or admin can edit these destinations or percentages.</p></div></div></div><aside className="glass-panel health-panel"><span className="eyebrow">Liquidity policy</span><h2>Creator cannot withdraw.</h2><p>Seeded LP position is owned by SPLIT&apos;s LiquidityVault. Fee liquidity allocations remain reserved per project and currency.</p></aside></div> : null}
-    {tab === "profile" ? <section className="profile-form glass-panel"><span className="eyebrow">Offchain metadata</span><h2>Project profile</h2><p>Metadata editing remains unavailable until wallet-signature authentication and its scoped Supabase write policy are deployed. No local save is presented as a published change.</p><label>Description<textarea value={token.description} readOnly /></label><label>Website<input value={token.website} readOnly /></label><label>X / Twitter<input value={token.twitter} readOnly /></label></section> : null}
+    {tab === "profile" ? <ProjectProfileEditor token={token} /> : null}
     {tab === "transactions" ? <section className="dashboard-section standalone"><div className="section-heading"><div><span className="eyebrow">Canonical chain logs</span><h2>Routed fee legs</h2></div><a href={`${EXPLORER_URL}/address/${token.address}?tab=txs`} target="_blank" rel="noreferrer">View explorer <Icon name="external" /></a></div>{routingEvents.length ? <div className="history-list">{routingEvents.map((row) => <div className="history-row" key={row.id}><span className="history-icon"><Icon name="wallet" /></span><strong>{formatUnits(BigInt(row.raw_amount), row.token_decimals ?? 18)} {row.currency?.toLowerCase() === "0x0000000000000000000000000000000000000000" ? "ETH" : token.ticker}</strong><span className="history-arrow">&rarr;</span><strong>{row.destination_type}</strong><small>Block {row.block_number}</small><a href={explorerTx(row.tx_hash)} target="_blank" rel="noreferrer">View tx <Icon name="external" size={12} /></a></div>)}</div> : <div className="empty-state glass-panel"><p>No canonical routing records indexed for this project yet.</p></div>}</section> : null}
   </div></AppShell>;
 }
 
-function ManageOverview({ token }: { token: Token }) {
-  return <div className="manage-overview-grid"><div className="stat-grid"><StatCard label="Market cap  /  indexed" value={token.marketCap} icon="chart" /><StatCard label="Volume  /  indexed" value={token.volume} icon="bars" /><StatCard label="Fee allocations" value="Open fee analytics" icon="wallet" /><StatCard label="Holders  /  indexed" value={token.holders} icon="layers" /></div><div className="glass-panel manage-summary"><span className="eyebrow">Protocol state</span><h2>Allocation and claims are separate.</h2><p>Processed fees become pull-claim balances for configured recipients. Liquidity allocations remain reserved in the SPLIT vault.</p><span className="success-text"><span className="status-dot" />Immutable split configuration</span></div></div>;
-}
-
-function ManageRouting({ token }: { token: Token }) {
-  return <div className="manage-routing-grid"><div><section className="routing-config glass-panel"><div className="form-section-head"><div><span className="eyebrow">Immutable configuration</span><h2>Current split</h2></div><span className="success-text"><span className="status-dot" />Indexed onchain</span></div><FlowDiagram allocations={token.split} /><div className="routing-address-table"><div><span>Destination</span><span>Share</span><span>Address</span><span>Type</span></div>{token.split.map((item) => <div key={item.key}><span><i style={{ background: item.color }} />{item.label}</span><strong>{item.value}%</strong><span><code>{item.address}</code><CopyButton value={item.address ?? ""} /></span><span>{item.type}</span></div>)}</div></section><div className="locked-callout"><Icon name="lock" /><div><strong>Locked onchain</strong><p>The fee routing configuration for this token is immutable and cannot be modified. This was set at deployment.</p></div></div></div><aside className="glass-panel health-panel"><span className="eyebrow">Payout design</span><h2>Recipients claim<br />independently.</h2><p>Allocation never transfers directly to a recipient. Each recipient claim is isolated, and the liquidity share stays reserved in the vault.</p><span className="success-text"><span className="status-dot" />Immutable split configuration</span></aside></div>;
+function ProjectProfileEditor({ token }: { token: Token }) {
+  const wallet = useWallet();
+  const { data: walletClient } = useWalletClient();
+  const router = useRouter();
+  const { showToast } = useToast();
+  const [profile, setProfile] = useState({
+    description: token.description, website: token.website, twitter: token.twitter,
+    telegram: token.telegram, discord: token.discord,
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const save = async () => {
+    if (!wallet.address || wallet.status !== "connected" || !walletClient || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      await uploadConfirmedProjectMetadata({
+        token: token.address as Address, account: wallet.address, walletClient,
+        draft: { ...profile, logoDataUrl: "" },
+      });
+      showToast("Project profile saved", "success");
+      router.refresh();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Project profile could not be saved.");
+    } finally { setSaving(false); }
+  };
+  return <section className="profile-form glass-panel"><span className="eyebrow">Offchain metadata</span><h2>Project profile</h2><p>The creator signs these fields. Fee routing remains locked onchain.</p><label>Description<textarea maxLength={360} value={profile.description} onChange={(event) => setProfile({ ...profile, description: event.target.value })} /></label><label>Website<input value={profile.website} onChange={(event) => setProfile({ ...profile, website: event.target.value })} /></label><label>X / Twitter<input value={profile.twitter} onChange={(event) => setProfile({ ...profile, twitter: event.target.value })} /></label><label>Telegram<input value={profile.telegram} onChange={(event) => setProfile({ ...profile, telegram: event.target.value })} /></label><label>Discord<input value={profile.discord} onChange={(event) => setProfile({ ...profile, discord: event.target.value })} /></label><button className="button button-primary" disabled={saving || wallet.status !== "connected"} onClick={() => void save()}>{saving ? "Saving..." : "Save project profile"}</button>{error ? <p className="form-error" role="alert">{error}</p> : null}</section>;
 }
 
 export function SettingsPage() {

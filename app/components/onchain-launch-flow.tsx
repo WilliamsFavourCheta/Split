@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useConnection, usePublicClient, useWalletClient } from "wagmi";
-import { decodeEventLog, formatEther, isAddress, parseEther, zeroHash } from "viem";
+import { decodeEventLog, formatEther, isAddress, isHash, parseEther, zeroHash } from "viem";
 import { getSplitFactoryAddress, productionLaunchEnabled } from "../contracts/addresses";
 import { splitFactoryAbi } from "../contracts/abis";
 import { waitForSuccessfulReceipt } from "../contracts/interactions";
@@ -17,6 +17,7 @@ import { SplitStrip } from "./visuals";
 import { targetChainId } from "../web3/chains";
 import { getTransactionExplorerUrl } from "../web3/explorer";
 import { toWalletErrorMessage } from "../web3/errors";
+import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 
 type TxState = "idle" | "awaiting-signature" | "pending" | "indexing" | "error";
 
@@ -66,9 +67,12 @@ export function OnchainLaunchReview() {
     let tokenSeedAmount: bigint;
     const launchFee = parseEther("0.0005");
     try {
+      if (draft.name.trim().length < 2 || new TextEncoder().encode(draft.name.trim()).length > 64
+        || !/^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim())) throw new Error("invalid token details");
       quoteAmount = parseEther(draft.initialLiquidity);
       tokenSeedAmount = parseEther(draft.tokenSeedAmount);
       if (quoteAmount <= BigInt(0) || tokenSeedAmount <= BigInt(0) || tokenSeedAmount > BigInt(1_000_000_000) * BigInt(10) ** BigInt(18)) throw new Error("invalid seed amounts");
+      if (!Object.values(draft.allocations).every((value) => Number.isInteger(value) && value >= 0 && value <= 100)) throw new Error("invalid percentages");
       if (Object.values(draft.allocations).reduce((sum, value) => sum + value, 0) !== 100) throw new Error("invalid allocations");
       if (draft.quoteAsset !== "ETH") throw new Error("unsupported quote asset");
       if (draft.allocations.projectTreasury > 0 && !isAddress(draft.projectTreasuryAddress)) throw new Error("invalid project treasury");
@@ -139,7 +143,16 @@ export function OnchainLaunchReview() {
         }
       }
       if (!indexed) showToast("Launch confirmed. Indexing your project...", "default");
-      router.push(`/launch/success?token=${confirmedToken}&tx=${submittedHash}&indexed=${indexed ? "1" : "0"}`);
+      let metadataSaved = false;
+      if (indexed) {
+        try {
+          await uploadConfirmedProjectMetadata({ token: confirmedToken, account: wallet.address, walletClient, draft });
+          metadataSaved = true;
+        } catch (metadataError) {
+          showToast(metadataError instanceof Error ? metadataError.message : "Logo persistence failed.", "error");
+        }
+      }
+      router.push(`/launch/success?token=${confirmedToken}&tx=${submittedHash}&indexed=${indexed ? "1" : "0"}&metadata=${metadataSaved ? "saved" : "pending"}`);
     } catch (error) {
       if (submittedHash) setTxHash(submittedHash);
       const message = chainConfirmed
@@ -194,14 +207,61 @@ function ReviewSection({ title, editHref, children }: { title: string; editHref:
 }
 
 export function OnchainLaunchSuccessPage() {
-  const { resetDraft } = useLaunchDraft();
+  const { draft, resetDraft } = useLaunchDraft();
   const { showToast } = useToast();
+  const wallet = useWallet();
+  const publicClient = usePublicClient({ chainId: 4663 });
+  const { data: walletClient } = useWalletClient();
+  const [confirmed, setConfirmed] = useState<{ token: `0x${string}`; hash: `0x${string}` } | null>(null);
+  const [verification, setVerification] = useState("Verifying the launch receipt on Robinhood Chain...");
+  const [metadataState, setMetadataState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const hasMetadata = Boolean(draft.logoDataUrl || draft.description.trim() || draft.website.trim() || draft.twitter.trim() || draft.telegram.trim() || draft.discord.trim());
+
+  useEffect(() => {
+    const hash = new URLSearchParams(window.location.search).get("tx");
+    const factory = getSplitFactoryAddress(4663);
+    if (!hash || !isHash(hash) || !factory || !publicClient) {
+      queueMicrotask(() => setVerification("No verifiable SPLIT launch receipt was provided."));
+      return;
+    }
+    let cancelled = false;
+    void publicClient.getTransactionReceipt({ hash }).then((receipt) => {
+      if (cancelled) return;
+      if (receipt.status !== "success") throw new Error("The launch transaction did not succeed.");
+      for (const log of receipt.logs) {
+        if (log.address.toLowerCase() !== factory.toLowerCase()) continue;
+        try {
+          const event = decodeEventLog({ abi: splitFactoryAbi, eventName: "TokenLaunched", data: log.data, topics: log.topics });
+          setConfirmed({ token: event.args.token, hash });
+          setVerification("");
+          return;
+        } catch { /* Other factory logs are allowed in the receipt. */ }
+      }
+      throw new Error("No SPLIT TokenLaunched event was found in the confirmed factory receipt.");
+    }).catch((error) => { if (!cancelled) setVerification(error instanceof Error ? error.message : "The launch receipt could not be verified."); });
+    return () => { cancelled = true; };
+  }, [publicClient]);
+
+  const saveLogo = async () => {
+    if (!confirmed || !walletClient || !wallet.address || wallet.status !== "connected") return;
+    setMetadataState("saving");
+    try {
+      await uploadConfirmedProjectMetadata({ token: confirmed.token, account: wallet.address, walletClient, draft });
+      setMetadataState("saved");
+      showToast("Project metadata saved", "success");
+    } catch (error) {
+      setMetadataState("failed");
+      showToast(error instanceof Error ? error.message : "Logo persistence failed.", "error");
+    }
+  };
 
   return <AppShell footer={false}><div className="success-page section-shell">
     <div className="success-orbit"><span><Icon name="lock" size={34} /></span><i /><i /></div>
-    <span className="eyebrow">Pre-launch visual preview</span>
-    <h1>Token launching<br /><span>is disabled.</span></h1>
-    <p>SPLIT production contracts have not completed release approval or deployment. Query-string values are not treated as proof of a transaction. No launch was submitted from this preview.</p>
+    <span className="eyebrow">Robinhood Chain receipt</span>
+    <h1>{confirmed ? <>Launch<br /><span>confirmed.</span></> : <>Launch status<br /><span>unverified.</span></>}</h1>
+    <p>{confirmed ? `Factory event confirms token ${confirmed.token}. The indexer and logo may still be syncing.` : verification}</p>
+    {confirmed ? <div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link><a className="button button-outline" href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View transaction</a>{hasMetadata && metadataState !== "saved" ? <button className="button button-outline" disabled={metadataState === "saving" || wallet.status !== "connected"} onClick={() => void saveLogo()}>{metadataState === "saving" ? "Saving metadata..." : "Save project metadata"}</button> : null}</div> : null}
+    {confirmed && hasMetadata && metadataState !== "saved" ? <p>Keep this local draft until its metadata is saved. A wallet signature is required; no chain transaction is sent for metadata.</p> : null}
     <div className="success-actions"><button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>
   </div></AppShell>;
 }

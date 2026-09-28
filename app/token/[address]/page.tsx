@@ -8,5 +8,7 @@ export default async function Page({ params }: PageProps<"/token/[address]">) {
   const token = await getProjectToken(address);
   if (!token) return <ProjectNotIndexedPage address={address} />;
   const [routingEvents, accrualEvents, priceHistory] = await Promise.all([getProjectFeeHistory(address), getProjectAccrualHistory(address), getProjectPriceHistory(address)]);
-  return <TokenDetailPage token={token} routingEvents={routingEvents} accrualEvents={accrualEvents} priceHistory={priceHistory.snapshots} priceHistoryStatus={priceHistory.status} />;
+  const latestPrice = priceHistory.snapshots.at(-1)?.priceEth;
+  const tokenWithPrice = { ...token, price: latestPrice ? `${latestPrice.toPrecision(6)} ETH / token` : "-" };
+  return <TokenDetailPage token={tokenWithPrice} routingEvents={routingEvents} accrualEvents={accrualEvents} priceHistory={priceHistory.snapshots} priceHistoryStatus={priceHistory.status} />;
 }

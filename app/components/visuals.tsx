@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Allocation } from "../data/mock";
+import { selectPriceSnapshots, type PriceSnapshot, type PricePeriod } from "../lib/projects/price";
 
 export function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -54,40 +55,19 @@ export function Donut({ allocations, size = 76 }: { allocations: Allocation[]; s
   return <svg className="donut" width={size} height={size} viewBox="0 0 100 100" aria-label="Fee split chart">{circles}</svg>;
 }
 
-const chartSets: Record<string, string> = {
-  "24H": "M0 188 C42 174 64 178 96 154 S148 174 178 142 S222 154 256 121 S310 142 346 106 S398 129 430 92 S486 123 526 83 S584 108 628 64 S692 90 738 54 S794 78 850 42",
-  "7D": "M0 176 C54 156 82 192 130 150 S208 94 265 122 S352 154 410 96 S498 70 555 102 S640 54 704 70 S792 34 850 48",
-  "30D": "M0 198 C70 180 112 120 164 145 S266 192 330 132 S434 104 498 116 S612 52 686 82 S780 38 850 34",
-  ALL: "M0 212 C48 198 88 220 130 185 S210 166 264 174 S342 134 405 148 S492 98 556 112 S646 64 708 78 S798 28 850 38",
-};
-
-export function PriceChart({ period = "24H" }: { period?: string }) {
-  const path = chartSets[period] ?? chartSets["24H"];
-  return <div className="price-chart" aria-label={`${period} mock price chart`}><svg viewBox="0 0 850 240" preserveAspectRatio="none" role="img"><defs><linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#8b5cff" stopOpacity=".38" /><stop offset="100%" stopColor="#8b5cff" stopOpacity="0" /></linearGradient><filter id="chart-glow"><feGaussianBlur stdDeviation="4" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter></defs>{[28, 86, 144, 202].map((y) => <line key={y} x1="0" y1={y} x2="850" y2={y} className="chart-grid-line" />)}<path d={`${path} L850 240 L0 240 Z`} fill="url(#chart-fill)" /><path d={path} className="chart-line" filter="url(#chart-glow)" /></svg><div className="chart-tooltip"><strong>$0.0042</strong><small>Now</small></div><div className="chart-axis"><span>12:00</span><span>18:00</span><span>00:00</span><span>06:00</span><span>12:00</span></div></div>;
-}
-
-type PriceSnapshot = { priceEth: number; snapshotAt: string };
-type ChartPeriod = "1D" | "7D" | "30D" | "ALL";
-
 function formatSnapshotPrice(value: number) {
   return `${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 6 }).format(value)} ETH`;
 }
 
 export function TokenPriceChart({ ticker, snapshots, status = "ready" }: { ticker: string; snapshots: PriceSnapshot[]; status?: "ready" | "unconfigured" | "migration-required" }) {
-  const [period, setPeriod] = useState<ChartPeriod>("1D");
+  const [period, setPeriod] = useState<PricePeriod>("1D");
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
-  const visible = useMemo(() => {
-    if (period === "ALL" || snapshots.length === 0) return snapshots;
-    const ranges: Record<Exclude<ChartPeriod, "ALL">, number> = { "1D": 86_400_000, "7D": 604_800_000, "30D": 2_592_000_000 };
-    const latestSnapshotAt = new Date(snapshots.at(-1)!.snapshotAt).getTime();
-    const cutoff = latestSnapshotAt - ranges[period];
-    return snapshots.filter((point) => new Date(point.snapshotAt).getTime() >= cutoff);
-  }, [period, snapshots]);
+  const visible = useMemo(() => selectPriceSnapshots(snapshots, period), [period, snapshots]);
   const values = visible.map((point) => point.priceEth);
   const low = Math.min(...values);
   const high = Math.max(...values);
-  const spread = Math.max(high - low, Math.abs(high) * 0.03, Number.EPSILON);
+  const spread = Math.max(high - low, Math.abs(high) * 0.03, Number.MIN_VALUE);
   const coords = visible.map((point, index) => ({
     x: visible.length === 1 ? 425 : 12 + (index / (visible.length - 1)) * 826,
     y: 12 + ((high + spread * 0.08 - point.priceEth) / (spread * 1.16)) * 180,
@@ -108,7 +88,7 @@ export function TokenPriceChart({ ticker, snapshots, status = "ready" }: { ticke
 
   return <section className="token-price-chart glass-panel" aria-label={`${ticker} historical price chart`}>
     <div className="token-chart-head"><div><span className="eyebrow">Official pool price in ETH per token</span><strong>{activePoint ? formatSnapshotPrice(activePoint.priceEth) : "No price data"}</strong>{change !== null ? <small className={change >= 0 ? "success-text" : "error-text"}>{change >= 0 ? "+" : ""}{change.toFixed(2)}% in selected period</small> : null}</div><div className="period-tabs" role="tablist" aria-label="Price chart period">{(["1D", "7D", "30D", "ALL"] as const).map((item) => <button type="button" key={item} role="tab" aria-selected={period === item} className={period === item ? "active" : ""} onClick={() => { setPeriod(item); setHoverIndex(null); }}>{item}</button>)}</div></div>
-    {visible.length > 0 ? <><div className="token-chart-frame"><svg ref={svgRef} viewBox="0 0 850 220" preserveAspectRatio="none" role="img" aria-label={`${visible.length} indexed pool price events`} onPointerMove={updateHover} onPointerLeave={() => setHoverIndex(null)}><defs><linearGradient id="token-chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9c6cff" stopOpacity=".3" /><stop offset="100%" stopColor="#9c6cff" stopOpacity="0" /></linearGradient></defs>{[24, 78, 132, 186].map((y) => <line key={y} x1="0" y1={y} x2="850" y2={y} className="chart-grid-line" />)}{area ? <path d={area} fill="url(#token-chart-fill)" /> : null}{coords.length > 1 ? <polyline points={line} className="chart-line" /> : coords.map((point) => <circle key={`${point.x}:${point.y}`} cx={point.x} cy={point.y} r="5" className="token-chart-dot" />)}{activePoint && coords[activeIndex] ? <circle cx={coords[activeIndex].x} cy={coords[activeIndex].y} r="5" className="token-chart-focus" /> : null}</svg>{activePoint ? <div className="token-chart-tooltip" style={{ left: `${Math.min(88, Math.max(12, (coords[activeIndex]?.x ?? 425) / 8.5))}%` }}><strong>{formatSnapshotPrice(activePoint.priceEth)}</strong><small>{new Date(activePoint.snapshotAt).toLocaleString()}</small></div> : null}</div><div className="token-chart-axis"><span>{visible[0] ? new Date(visible[0].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.length > 2 ? new Date(visible[Math.floor(visible.length / 2)].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.at(-1) ? new Date(visible.at(-1)!.snapshotAt).toLocaleDateString() : ""}</span></div></> : <div className="token-chart-empty"><div className="token-chart-grid" /><span className="eyebrow">{status === "migration-required" ? "Price-history migration required" : status === "unconfigured" ? "Chart data not configured" : "Waiting for on-chain trades"}</span><p>{status === "migration-required" ? "Apply supabase/migrations/202609280003_project_price_history.sql to enable exact, canonical pool-price history." : status === "unconfigured" ? "Configure the SPLIT indexer and database to load official pool price events." : "There are no official pool trades for this period yet. The chart uses only canonical Robinhood Chain Swap events; no sample or simulated prices are shown."}</p></div>}
+    {visible.length > 0 ? <><div className="token-chart-frame"><svg ref={svgRef} viewBox="0 0 850 220" preserveAspectRatio="none" role="img" aria-label={`${visible.length} indexed pool price events`} onPointerMove={updateHover} onPointerLeave={() => setHoverIndex(null)}><defs><linearGradient id="token-chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9c6cff" stopOpacity=".3" /><stop offset="100%" stopColor="#9c6cff" stopOpacity="0" /></linearGradient></defs>{[24, 78, 132, 186].map((y) => <line key={y} x1="0" y1={y} x2="850" y2={y} className="chart-grid-line" />)}{area ? <path d={area} fill="url(#token-chart-fill)" /> : null}{coords.length > 1 ? <polyline points={line} className="chart-line" /> : coords.map((point) => <circle key={`${point.x}:${point.y}`} cx={point.x} cy={point.y} r="5" className="token-chart-dot" />)}{activePoint && coords[activeIndex] ? <circle cx={coords[activeIndex].x} cy={coords[activeIndex].y} r="5" className="token-chart-focus" /> : null}</svg>{activePoint ? <div className="token-chart-tooltip" style={{ left: `${Math.min(88, Math.max(12, (coords[activeIndex]?.x ?? 425) / 8.5))}%` }}><strong>{formatSnapshotPrice(activePoint.priceEth)}</strong><small>{new Date(activePoint.snapshotAt).toLocaleString()}</small></div> : null}</div><div className="token-chart-axis"><span>{visible[0] ? new Date(visible[0].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.length > 2 ? new Date(visible[Math.floor(visible.length / 2)].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.at(-1) ? new Date(visible.at(-1)!.snapshotAt).toLocaleDateString() : ""}</span></div></> : <div className="token-chart-empty"><div className="token-chart-grid" /><span className="eyebrow">{status === "migration-required" ? "Price-history migration required" : status === "unconfigured" ? "Chart data not configured" : "Waiting for official pool prices"}</span><p>{status === "migration-required" ? "Price-history indexing is unavailable. Ask the operator to verify the already-applied migration and indexer." : status === "unconfigured" ? "Configure the SPLIT indexer and database to load official pool price events." : "There are no official pool price observations for this period yet. The chart uses canonical Robinhood Chain launch and Swap events; no sample prices are shown."}</p></div>}
     <small className="token-chart-source">Source: post-swap sqrtPriceX96 from the Robinhood Chain Uniswap v4 PoolManager.</small>
   </section>;
 }

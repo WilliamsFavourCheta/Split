@@ -5,6 +5,7 @@ export type TokenStatus = "live" | "graduated" | "upcoming" | "failed";
 
 export type Token = {
   address: string;
+  poolId?: string;
   name: string;
   ticker: string;
   status: TokenStatus;
@@ -41,17 +42,6 @@ export const DEFAULT_SPLIT: Allocation[] = [
   { key: "projectTreasury", label: "Project Treasury", value: 20, color: "#6135bd", type: "Project destination" },
   { key: "community", label: "Community", value: 10, color: "#c6a3ff", type: "Community destination" },
 ];
-
-/** Product token lists must be loaded from canonical indexed chain events. */
-export const TOKENS: Token[] = [];
-
-/** Legacy product history is empty; v1 indexing consumes FeesAllocated/FeesClaimed logs. */
-export const ROUTING_HISTORY: Array<{ amount: string; destination: string; time: string; hash: string }> = [];
-
-export function tokenByAddress(address: string): Token | undefined {
-  const normalized = address.toLowerCase();
-  return TOKENS.find((token) => token.address.toLowerCase() === normalized);
-}
 
 export function shortAddress(address: string, head = 6, tail = 4) {
   return `${address.slice(0, head)}...${address.slice(-tail)}`;

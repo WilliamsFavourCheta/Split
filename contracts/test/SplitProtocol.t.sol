@@ -6,6 +6,7 @@ import {SplitHook} from "../src/SplitHook.sol";
 import {SplitFeeRouter} from "../src/SplitFeeRouter.sol";
 import {SplitLiquidityVault} from "../src/SplitLiquidityVault.sol";
 import {SplitFactory} from "../src/SplitFactory.sol";
+import {SplitSwapExecutor} from "../src/SplitSwapExecutor.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
@@ -32,6 +33,19 @@ interface Vm {
     function rollFork(uint256) external;
     function load(address, bytes32) external view returns (bytes32);
     function skip(bool) external;
+}
+
+interface ISplitV4Quoter {
+    struct QuoteExactSingleParams {
+        PoolKey poolKey;
+        bool zeroForOne;
+        uint128 exactAmount;
+        bytes hookData;
+    }
+
+    function quoteExactInputSingle(QuoteExactSingleParams memory params)
+        external
+        returns (uint256 amountOut, uint256 gasEstimate);
 }
 
 contract NativeReceiver {
@@ -1463,6 +1477,68 @@ contract SplitProtocolTest is IUnlockCallback {
         require(vault.pendingLiquidity(poolIdB, keyB.currency1) == 0, "PROJECT_B_LIQUIDITY_CROSSED");
     }
 
+    function testOfficialSwapExecutorBuysAndSellsWithHookFees() external {
+        PoolManager manager = new PoolManager(address(this));
+        NativeReceiver treasury = new NativeReceiver();
+        NativeReceiver community = new NativeReceiver();
+        SplitStackDeployer deployer = new SplitStackDeployer();
+        (SplitFactory factory, SplitHook hook,,) = deployer.deploy(IPoolManager(address(manager)), address(treasury));
+        SplitSwapExecutor executor = new SplitSwapExecutor(factory);
+        vm.deal(address(this), 3 ether);
+        SplitFactory.LaunchParams memory params = SplitFactory.LaunchParams({
+            name: "Executor Test",
+            symbol: "EXEC",
+            tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 4_000,
+            liquidityBps: 3_000,
+            projectTreasuryBps: 2_000,
+            communityBps: 1_000,
+            projectTreasury: address(treasury),
+            community: address(community),
+            salt: keccak256("executor")
+        });
+        (address tokenAddress, PoolId poolId) = factory.launch{value: 1.0005 ether}(params);
+        SplitToken token = SplitToken(tokenAddress);
+        (PoolKey memory key, PoolId resolvedId) = executor.officialPool(tokenAddress);
+        require(PoolId.unwrap(resolvedId) == PoolId.unwrap(poolId), "WRONG_OFFICIAL_POOL");
+        require(
+            Currency.unwrap(key.currency0) == address(0) && Currency.unwrap(key.currency1) == tokenAddress,
+            "WRONG_ORDER"
+        );
+
+        uint256 tokenBeforeBuy = token.balanceOf(address(this));
+        uint256 bought = executor.buy{value: 1e15}(tokenAddress, 1, block.timestamp + 600);
+        require(bought > 0 && token.balanceOf(address(this)) == tokenBeforeBuy + bought, "BUY_OUTPUT");
+        require(hook.accrued(poolId, Currency.wrap(tokenAddress)) > 0, "BUY_HOOK_FEE_MISSING");
+
+        uint256 sellAmount = bought / 2;
+        token.approve(address(executor), sellAmount);
+        uint256 ethBeforeSell = address(this).balance;
+        uint256 sold = executor.sell(tokenAddress, sellAmount, 1, block.timestamp + 600);
+        require(sold > 0 && address(this).balance == ethBeforeSell + sold, "SELL_OUTPUT");
+        require(hook.accrued(poolId, Currency.wrap(address(0))) > 0, "SELL_HOOK_FEE_MISSING");
+        require(token.allowance(address(this), address(executor)) == 0, "APPROVAL_NOT_EXACTLY_CONSUMED");
+
+        vm.expectRevert();
+        executor.sell(tokenAddress, sellAmount, 1, block.timestamp + 600);
+        token.approve(address(executor), sellAmount);
+        vm.expectRevert();
+        executor.sell(tokenAddress, sellAmount, type(uint256).max, block.timestamp + 600);
+        require(token.allowance(address(this), address(executor)) == sellAmount, "FAILED_SELL_CONSUMED_APPROVAL");
+
+        vm.expectRevert();
+        executor.buy{value: 0}(tokenAddress, 1, block.timestamp + 600);
+        vm.expectRevert();
+        executor.buy{value: 1e15}(address(0xBEEF), 1, block.timestamp + 600);
+        vm.expectRevert();
+        executor.buy{value: 1e15}(tokenAddress, type(uint256).max, block.timestamp + 600);
+        vm.expectRevert();
+        executor.buy{value: 1e15}(tokenAddress, 1, 0);
+        vm.expectRevert();
+        executor.unlockCallback("");
+    }
+
     /// @notice Optional fork-only lifecycle. It never broadcasts and is explicitly skipped
     ///         unless both a read-only RPC URL and a pinned historical block are provided.
     function testRHMainnetPinnedForkLaunchSeedSwapAndFeeSettlement() external {
@@ -1612,6 +1688,15 @@ contract SplitProtocolTest is IUnlockCallback {
         require(vault.pendingLiquidity(poolId, key.currency0) != 0, "NATIVE_LIQUIDITY_NOT_CREDITED");
         require(vault.pendingLiquidity(poolId, key.currency1) != 0, "TOKEN_LIQUIDITY_NOT_CREDITED");
         _claimForkAllocations(router, protocolTreasury, projectTreasury, community, tokenAddress, poolId);
+
+        ISplitV4Quoter quoter = ISplitV4Quoter(0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94);
+        require(address(quoter).code.length != 0, "OFFICIAL_V4_QUOTER_MISSING");
+        (uint256 quotedBuy,) = quoter.quoteExactInputSingle(
+            ISplitV4Quoter.QuoteExactSingleParams({poolKey: key, zeroForOne: true, exactAmount: 1e15, hookData: ""})
+        );
+        SplitSwapExecutor swapExecutor = new SplitSwapExecutor(factory);
+        uint256 actualBuy = swapExecutor.buy{value: 1e15}(tokenAddress, quotedBuy * 99 / 100, block.timestamp + 600);
+        require(actualBuy == quotedBuy, "FORK_QUOTE_DID_NOT_INCLUDE_HOOK_FEE");
 
         // A successful launch fee is rolled back if a later refund fails, even
         // though the fee was first credited to the router's pull-claim ledger.
