@@ -2,6 +2,7 @@ import "server-only";
 import { getIndexerContracts, getBlockHash, getFinalizedEvents, indexerClient, RH_MAINNET_CHAIN_ID } from "./evm-source";
 import {
   getIndexerCheckpoint,
+  getIndexerCheckpointHistory,
   markReorgedEventsNoncanonical,
   saveIndexerCheckpoint,
   upsertAccrual,
@@ -13,9 +14,17 @@ import {
   upsertProtocolClaimEvent,
   upsertProtocolLaunchFeeClaim,
   upsertProtocolLaunchFee,
+  upsertPriceEvent,
 } from "./repository";
 import type { SplitIndexerEvent } from "./types";
-import { boundedBatchEnd, replayEventsInCanonicalOrder, verifiedRecoveryStart } from "./remediation-logic";
+import {
+  assertEventBlockHashesCanonical,
+  assertRangeEndHashStable,
+  boundedBatchEnd,
+  findVerifiedCommonAncestor,
+  prepareDeepReorgRecovery,
+  replayEventsInCanonicalOrder,
+} from "./remediation-logic";
 import { createIndexerSupabaseClient } from "../supabase/server";
 
 function positiveInteger(value: string | undefined, fallback: number, name: string) {
@@ -47,6 +56,11 @@ async function applyEvent(event: SplitIndexerEvent, tokens: Map<string, string>)
     tokens.set(event.poolId.toLowerCase(), event.tokenAddress.toLowerCase());
     return projectId;
   }
+  if (event.type === "PoolPriceUpdated") {
+    const token = await tokenForPool(event.poolId, tokens);
+    await upsertPriceEvent(event, token);
+    return undefined;
+  }
   if (event.type === "LaunchProtocolFeeCharged") {
     await upsertProtocolLaunchFee(event);
     return undefined;
@@ -67,7 +81,8 @@ async function applyEvent(event: SplitIndexerEvent, tokens: Map<string, string>)
 
 /**
  * Poll one bounded, finalized range. Replay is idempotent; deep checkpoint
- * mismatches halt before rollback until an operator verifies a common ancestor.
+ * mismatches roll back only after a matching saved historical checkpoint proves
+ * a common ancestor with the current RPC chain.
  */
 export async function runIndexerBatch() {
   const contracts = getIndexerContracts();
@@ -83,43 +98,64 @@ export async function runIndexerBatch() {
     ? BigInt(Math.max(Number(startBlock), checkpoint.last_processed_block - Number(reorgWindow) + 1))
     : startBlock;
   let to = boundedBatchEnd(from, finalizedHead, batchSize);
+  let deepReorgRolledBack = false;
 
   if (checkpoint?.last_processed_block_hash) {
     const savedBlock = BigInt(checkpoint.last_processed_block);
     const canonicalHash = await getBlockHash(savedBlock);
     if (canonicalHash.toLowerCase() !== checkpoint.last_processed_block_hash.toLowerCase()) {
-      const recoveryFrom = process.env.SPLIT_INDEXER_RECOVERY_FROM_BLOCK;
-      const expectedAncestorHash = process.env.SPLIT_INDEXER_RECOVERY_ANCESTOR_HASH;
-      if (!recoveryFrom || !expectedAncestorHash) {
-        throw new Error(
-          `Deep reorg/checkpoint mismatch at block ${savedBlock}. Indexing halted before rollback. ` +
-          "Verify a common ancestor and set SPLIT_INDEXER_RECOVERY_FROM_BLOCK to ancestor+1 plus " +
-          "SPLIT_INDEXER_RECOVERY_ANCESTOR_HASH, then retry.",
-        );
-      }
-      const candidateFrom = BigInt(positiveInteger(recoveryFrom, 0, "SPLIT_INDEXER_RECOVERY_FROM_BLOCK"));
-      const ancestorNumber = candidateFrom - BigInt(1);
-      const actualAncestorHash = await getBlockHash(ancestorNumber);
-      from = verifiedRecoveryStart({
+      const history = await getIndexerCheckpointHistory(RH_MAINNET_CHAIN_ID, contracts.factory);
+      const ancestor = await findVerifiedCommonAncestor({
         startBlock,
         checkpointBlock: savedBlock,
-        replayFrom: candidateFrom,
-        expectedAncestorHash,
-        actualAncestorHash,
+        checkpoints: history,
+        getCanonicalHash: getBlockHash,
       });
-      to = boundedBatchEnd(from, finalizedHead, batchSize);
+      const recovery = await prepareDeepReorgRecovery({
+        ancestorBlock: ancestor.ancestorBlock,
+        finalizedHead,
+        batchSize,
+        rollbackFrom: (blockNumber) => markReorgedEventsNoncanonical(RH_MAINNET_CHAIN_ID, blockNumber),
+      });
+      from = recovery.from;
+      to = recovery.to;
+      deepReorgRolledBack = true;
+      if (recovery.status === "waiting-for-finality") {
+        return {
+          chainId: RH_MAINNET_CHAIN_ID,
+          indexedThrough: Number(recovery.ancestorBlock),
+          events: 0,
+          status: "waiting-for-finality" as const,
+        };
+      }
     }
   }
   if (from > to) return { chainId: RH_MAINNET_CHAIN_ID, indexedThrough: Number(to), events: 0, status: "current" as const };
 
-  await markReorgedEventsNoncanonical(RH_MAINNET_CHAIN_ID, Number(from));
+  if (!deepReorgRolledBack) await markReorgedEventsNoncanonical(RH_MAINNET_CHAIN_ID, Number(from));
+  const rangeEndHashBeforeLogs = await getBlockHash(to);
   const events = await getFinalizedEvents(from, to);
+  const eventBlockNumbers = [...new Set(events.map((event) => event.blockNumber))];
+  const canonicalEventHashes = new Map<number, string>();
+  // Bound concurrent RPC reads while checking every returned event's block hash.
+  for (let index = 0; index < eventBlockNumbers.length; index += 20) {
+    const blockNumbers = eventBlockNumbers.slice(index, index + 20);
+    const hashes = await Promise.all(blockNumbers.map((blockNumber) => getBlockHash(BigInt(blockNumber))));
+    for (let hashIndex = 0; hashIndex < blockNumbers.length; hashIndex += 1) {
+      canonicalEventHashes.set(blockNumbers[hashIndex], hashes[hashIndex]);
+    }
+  }
+  assertEventBlockHashesCanonical(events, canonicalEventHashes);
+  const rangeEndHashAfterLogs = await getBlockHash(to);
+  assertRangeEndHashStable(to, rangeEndHashBeforeLogs, rangeEndHashAfterLogs);
+
   const tokens = new Map<string, string>();
   // TokenLaunched is emitted last in launch(), after its SplitConfigured log.
   // Index launches first so same-batch configuration logs have a project FK.
   const indexedLaunches = await replayEventsInCanonicalOrder(events, (event) => applyEvent(event, tokens));
-  const blockHash = await getBlockHash(to);
-  await saveIndexerCheckpoint(RH_MAINNET_CHAIN_ID, contracts.factory, Number(to), blockHash);
+  // Persist the hash that was checked against the log batch, not a later hash
+  // that could describe a different branch if a reorg occurs during DB writes.
+  await saveIndexerCheckpoint(RH_MAINNET_CHAIN_ID, contracts.factory, Number(to), rangeEndHashAfterLogs);
   return {
     chainId: RH_MAINNET_CHAIN_ID,
     fromBlock: Number(from),

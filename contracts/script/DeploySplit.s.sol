@@ -87,7 +87,7 @@ contract DeploySplit {
             salt = bytes32(nonce);
             address predicted =
                 address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash)))));
-            if (uint160(predicted) & 0x3fff == 0x44) return salt;
+            if (uint160(predicted) & 0x3fff == 0x2044) return salt;
         }
         revert HookSaltNotFound();
     }

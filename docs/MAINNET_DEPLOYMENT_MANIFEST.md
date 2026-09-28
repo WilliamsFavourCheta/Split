@@ -244,6 +244,10 @@ Using the public deployer's observed nonce `3`, the production script's CREATE s
 - Hook salt: `0x00000000000000000000000000000000000000000000000000000000000018b8`.
 - Hook init-code hash: `0x2aa2992c8dc18a11274e2a4c827893dcff105994cbd17c3bc3abfb4af7bbad8b`.
 - Predicted hook low 14 bits: `0x44`; assertion `low14 == 0x44` passed.
+
+## Round 2 security-remediation candidate — deployment data superseded
+
+The preceding `0x44` hook permission records and every hook salt/address/init-code prediction above describe the prior V1.1.1 candidate only. They MUST NOT be reused for the Round 2 candidate. The candidate now enables `beforeInitialize` in addition to the two swap callbacks, requiring low 14 bits `0x2044`. Its init code and mined salt necessarily differ. No Round 2 production address, salt, or deployment transaction has been produced or broadcast; rerun the guarded preview from this candidate before any future deployment review.
 - `eth_getCode` at latest block `0x469f98c` returned empty code for all five predicted addresses: collision check PASS.
 - The stacker address depends on the deployer's nonce at inclusion. Any intervening transaction, nonce change, changed build/artifact, or changed constructor configuration invalidates some or all predictions; they cannot be guaranteed until deployment is actually included and verified.
 

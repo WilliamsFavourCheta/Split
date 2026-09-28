@@ -10,7 +10,7 @@ import {SplitFactory} from "../src/SplitFactory.sol";
 /// @notice Deploys a mutually-referencing immutable protocol stack with no post-deploy admin.
 contract SplitStackDeployer {
     uint160 private constant HOOK_MASK = 0x3fff;
-    uint160 private constant HOOK_FLAGS = 0x44;
+    uint160 private constant HOOK_FLAGS = 0x2044;
 
     error HookDeploymentFailed();
     error DeploymentAddressMismatch();

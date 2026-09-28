@@ -10,8 +10,8 @@ import {SwapParams} from "v4-core/types/PoolOperation.sol";
 import {SafeCast} from "v4-core/libraries/SafeCast.sol";
 import {SplitFeeRouter} from "./SplitFeeRouter.sol";
 
-/// @notice 1% custom swap fee hook. Deploy only at an address with low bits 0x44:
-/// AFTER_SWAP plus AFTER_SWAP_RETURNS_DELTA. Other PoolManager callbacks are disabled.
+/// @notice 1% custom swap fee hook. Deploy only at an address with low bits 0x2044:
+/// BEFORE_INITIALIZE, AFTER_SWAP, and AFTER_SWAP_RETURNS_DELTA.
 contract SplitHook {
     using SafeCast for uint256;
     using CurrencyLibrary for Currency;
@@ -20,12 +20,14 @@ contract SplitHook {
 
     uint256 public constant SWAP_FEE_BPS = 100;
     uint256 private constant BPS = 10_000;
-    uint160 public constant REQUIRED_HOOK_MASK = 0x44;
+    uint160 public constant REQUIRED_HOOK_MASK = 0x2044;
 
     IPoolManager public immutable poolManager;
     address public immutable factory;
     SplitFeeRouter public immutable router;
     mapping(PoolId => bool) public registeredPool;
+    mapping(PoolId => bool) public initializationAuthorized;
+    mapping(PoolId => bool) public initializedPool;
     mapping(PoolId => mapping(Currency => uint256)) public accrued;
     mapping(PoolId => bool) private flushing;
 
@@ -33,6 +35,7 @@ contract SplitHook {
     error InvalidHookAddress();
     error InvalidPool();
     error Reentrancy();
+    error UnauthorizedInitialization();
 
     event PoolRegistered(
         PoolId indexed poolId, Currency currency0, Currency currency1, uint24 lpFee, int24 tickSpacing
@@ -56,9 +59,26 @@ contract SplitHook {
         if (msg.sender != factory) revert Unauthorized();
         if (address(key.hooks) != address(this)) revert InvalidPool();
         PoolId id = key.toId();
-        if (registeredPool[id]) revert InvalidPool();
+        if (registeredPool[id] || initializationAuthorized[id] || initializedPool[id]) revert InvalidPool();
         registeredPool[id] = true;
+        initializationAuthorized[id] = true;
         emit PoolRegistered(id, key.currency0, key.currency1, key.fee, key.tickSpacing);
+    }
+
+    /// @notice PoolManager initialization is permitted once, only for a pool registered by
+    ///         this immutable factory. PoolManager passes its immediate initializer as sender.
+    function beforeInitialize(address sender, PoolKey calldata key, uint160) external returns (bytes4) {
+        if (msg.sender != address(poolManager)) revert Unauthorized();
+        PoolId id = key.toId();
+        if (
+            sender != factory || address(key.hooks) != address(this) || !registeredPool[id]
+                || !initializationAuthorized[id] || initializedPool[id]
+        ) revert UnauthorizedInitialization();
+        // Consume authorization before returning to the manager. A subsequent initialization
+        // of this or any other key cannot reuse it; an outer revert rolls this state back too.
+        initializationAuthorized[id] = false;
+        initializedPool[id] = true;
+        return this.beforeInitialize.selector;
     }
 
     function afterSwap(

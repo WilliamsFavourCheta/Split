@@ -66,6 +66,14 @@ contract RevertingReceiver {
     function claimProtocolLaunchFees(SplitFeeRouter router) external {
         router.claimProtocolLaunchFees();
     }
+
+    function launch(SplitFactory factory, SplitFactory.LaunchParams calldata params)
+        external
+        payable
+        returns (address token, PoolId poolId)
+    {
+        return factory.launch{value: msg.value}(params);
+    }
 }
 
 contract ReentrantClaimReceiver {
@@ -243,11 +251,11 @@ contract SplitStackDeployer {
         bytes32 salt;
         address hookAddress;
         bool found;
-        for (uint256 i; i < 65_536; ++i) {
+        for (uint256 i; i < 262_144; ++i) {
             salt = bytes32(i);
             hookAddress =
                 address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash)))));
-            if (uint160(hookAddress) & 0x3fff == 0x44) {
+            if (uint160(hookAddress) & 0x3fff == 0x2044) {
                 found = true;
                 break;
             }
@@ -338,7 +346,7 @@ contract SplitProtocolTest is IUnlockCallback {
         require(address(factory.hook()) == address(hook), "HOOK_ADDRESS_MISMATCH");
         require(address(factory.feeRouter()) == address(router), "ROUTER_ADDRESS_MISMATCH");
         require(address(factory.liquidityVault()) == address(vault), "VAULT_ADDRESS_MISMATCH");
-        require(uint160(address(hook)) & 0x3fff == 0x44, "HOOK_PERMISSION_BITS_MISMATCH");
+        require(uint160(address(hook)) & 0x3fff == 0x2044, "HOOK_PERMISSION_BITS_MISMATCH");
         require(deployer.deployed(), "DEPLOYMENT_NOT_MARKED_COMPLETE");
 
         vm.expectRevert();
@@ -376,6 +384,99 @@ contract SplitProtocolTest is IUnlockCallback {
             ""
         );
         require(hook.accrued(alternatePoolId, Currency.wrap(address(token))) == 0, "ALTERNATE_POOL_ACCRUED_FEE");
+    }
+
+    function testFutureSplitPoolCannotBePreinitializedBeforeFactoryLaunch() external {
+        PoolManager manager = new PoolManager(address(this));
+        NativeReceiver treasury = new NativeReceiver();
+        NativeReceiver community = new NativeReceiver();
+        SplitStackDeployer deployer = new SplitStackDeployer();
+        (SplitFactory factory, SplitHook hook,,) = deployer.deploy(IPoolManager(address(manager)), address(treasury));
+
+        // The factory's first CREATE is the token. Predict it before any launch occurs.
+        address predictedToken = _predictedCreateAddress(address(factory), 1);
+        PoolKey memory intendedKey = PoolKey({
+            currency0: Currency.wrap(address(0)),
+            currency1: Currency.wrap(predictedToken),
+            fee: factory.LP_FEE(),
+            tickSpacing: factory.TICK_SPACING(),
+            hooks: IHooks(address(hook))
+        });
+        uint160 initialPrice = uint160(1 << 96);
+        address attacker = address(0xBEEF);
+
+        // Exact predicted future key, initialized directly by an attacker: denied.
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(intendedKey, initialPrice);
+
+        // Other key variants cannot borrow the same permission or bind a different PoolId.
+        PoolKey memory arbitraryTokenKey = intendedKey;
+        arbitraryTokenKey.currency1 = Currency.wrap(address(0xCAFE));
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(arbitraryTokenKey, initialPrice);
+
+        PoolKey memory alteredFeeKey = intendedKey;
+        alteredFeeKey.fee = 3_001;
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(alteredFeeKey, initialPrice);
+
+        PoolKey memory alteredSpacingKey = intendedKey;
+        alteredSpacingKey.tickSpacing = 61;
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(alteredSpacingKey, initialPrice);
+
+        // Reverse ordering is invalid for native/token currencies, and must never initialize.
+        PoolKey memory reversedKey = intendedKey;
+        reversedKey.currency0 = Currency.wrap(predictedToken);
+        reversedKey.currency1 = Currency.wrap(address(0));
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(reversedKey, initialPrice);
+
+        require(!hook.registeredPool(intendedKey.toId()), "ATTACKER_REGISTERED_POOL");
+        require(!hook.initializationAuthorized(intendedKey.toId()), "UNEXPECTED_STALE_AUTHORIZATION");
+
+        vm.deal(address(this), 2 ether);
+        SplitFactory.LaunchParams memory params = SplitFactory.LaunchParams({
+            name: "Authorized Launch",
+            symbol: "AUTH",
+            tokenSeedAmount: 1 ether,
+            seedQuoteAmount: 1 ether,
+            creatorBps: 4_000,
+            liquidityBps: 3_000,
+            projectTreasuryBps: 2_000,
+            communityBps: 1_000,
+            projectTreasury: address(treasury),
+            community: address(community),
+            salt: keccak256("authorized-launch")
+        });
+        RevertingReceiver revertingCreator = new RevertingReceiver();
+        vm.deal(address(this), 3 ether);
+        vm.expectRevert();
+        revertingCreator.launch{value: 1.000500000000000001 ether}(factory, params);
+        require(!hook.registeredPool(intendedKey.toId()), "FAILED_LAUNCH_LEFT_POOL_REGISTERED");
+        require(!hook.initializationAuthorized(intendedKey.toId()), "FAILED_LAUNCH_LEFT_STALE_AUTHORIZATION");
+        require(!hook.initializedPool(intendedKey.toId()), "FAILED_LAUNCH_LEFT_POOL_INITIALIZED");
+        require(!factory.launchedToken(predictedToken), "FAILED_LAUNCH_LEFT_TOKEN_MAPPING");
+
+        (address launchedToken, PoolId poolId) = factory.launch{value: 1.0005 ether}(params);
+        require(launchedToken == predictedToken, "CREATE_PREDICTION_CHANGED");
+        require(hook.registeredPool(poolId), "AUTHORIZED_POOL_NOT_REGISTERED");
+        require(hook.initializedPool(poolId), "POOL_INITIALIZATION_NOT_RECORDED");
+        require(!hook.initializationAuthorized(poolId), "AUTHORIZATION_NOT_CONSUMED");
+        require(factory.tokenForPool(poolId) == launchedToken, "FACTORY_POOL_MAPPING_MISSING");
+
+        // The pool already exists and its authorization has been consumed; both paths fail.
+        vm.expectRevert();
+        vm.prank(attacker);
+        manager.initialize(intendedKey, initialPrice);
+        vm.expectRevert();
+        vm.prank(attacker);
+        hook.registerPool(intendedKey);
     }
 
     receive() external payable {}
@@ -1056,7 +1157,7 @@ contract SplitProtocolTest is IUnlockCallback {
     function testHookPermissionBitsAreExact() external {
         MockPoolManager manager = new MockPoolManager();
         SplitHook hook = _deployHook(IPoolManager(address(manager)), address(this), address(this));
-        require(uint160(address(hook)) & 0x3fff == 0x44, "WRONG_PERMISSION_BITS");
+        require(uint160(address(hook)) & 0x3fff == 0x2044, "WRONG_PERMISSION_BITS");
     }
 
     function testFeeRoundsDownBelow100RawUnitsAndChargesOneAt100() external {
@@ -1658,7 +1759,7 @@ contract SplitProtocolTest is IUnlockCallback {
             salt = bytes32(nonce);
             address predicted =
                 address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), deployer, salt, initCodeHash)))));
-            if (uint160(predicted) & 0x3fff == 0x44) return salt;
+            if (uint160(predicted) & 0x3fff == 0x2044) return salt;
         }
         revert("HOOK_SALT_NOT_FOUND");
     }
@@ -2064,11 +2165,11 @@ contract SplitProtocolTest is IUnlockCallback {
             type(SplitHook).creationCode, abi.encode(manager, factory, SplitFeeRouter(payable(router)))
         );
         bytes32 initCodeHash = keccak256(initCode);
-        for (uint256 i; i < 65_536; ++i) {
+        for (uint256 i; i < 262_144; ++i) {
             bytes32 salt = bytes32(i);
             address predicted =
                 address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, initCodeHash)))));
-            if (uint160(predicted) & 0x3fff != 0x44) continue;
+            if (uint160(predicted) & 0x3fff != 0x2044) continue;
             address created;
             assembly ("memory-safe") {
                 created := create2(0, add(initCode, 0x20), mload(initCode), salt)

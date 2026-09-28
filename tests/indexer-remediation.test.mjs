@@ -75,34 +75,80 @@ test("multi-batch reorg replay restores project canonical state before later fee
   assert.deepEqual(processed, ["TokenLaunched", "TokenLaunched", "FeesAccrued"]);
 });
 
-test("deep reorg recovery reaches an explicitly verified ancestor beyond the 128-block overlap", () => {
+test("deep reorg finds a saved common ancestor and rolls back orphan financial rows", async () => {
+  const oldBranchHashAt1000 = `0x${"1".repeat(64)}`;
+  const oldBranchHashAt980 = `0x${"2".repeat(64)}`;
+  const commonHashAt700 = `0x${"a".repeat(64)}`;
   const checkpointBlock = BigInt(1_000);
   const overlapStart = checkpointBlock - BigInt(128) + BigInt(1);
-  const replayFrom = BigInt(700);
-  const ancestorHash = `0x${"a".repeat(64)}`;
-  assert.ok(replayFrom < overlapStart, "test recovery must exceed the normal overlap");
-  assert.equal(logic.verifiedRecoveryStart({
+  const canonicalHashes = new Map([
+    [980, `0x${"b".repeat(64)}`], // Valid current-chain block/hash, but too high and not an old-branch ancestor.
+    [700, commonHashAt700],
+  ]);
+  const checkpoints = [
+    { block_number: 1_000, block_hash: oldBranchHashAt1000 },
+    { block_number: 980, block_hash: oldBranchHashAt980 },
+    { block_number: 700, block_hash: commonHashAt700 },
+  ];
+  const ancestor = await logic.findVerifiedCommonAncestor({
     startBlock: BigInt(1),
     checkpointBlock,
-    replayFrom,
-    expectedAncestorHash: ancestorHash,
-    actualAncestorHash: ancestorHash,
-  }), replayFrom);
-  assert.equal(logic.boundedBatchEnd(replayFrom, BigInt(1_500), BigInt(500)), BigInt(1_199));
-  assert.throws(() => logic.verifiedRecoveryStart({
+    checkpoints,
+    getCanonicalHash: async (blockNumber) => canonicalHashes.get(Number(blockNumber)) ?? `0x${"c".repeat(64)}`,
+  });
+  assert.ok(ancestor.replayFrom < overlapStart, "recovery must exceed the normal overlap");
+  assert.equal(ancestor.ancestorBlock, BigInt(700));
+  assert.equal(ancestor.replayFrom, BigInt(701));
+  assert.equal(logic.boundedBatchEnd(ancestor.replayFrom, BigInt(1_500), BigInt(500)), BigInt(1_200));
+
+  const financialRows = [740, 880, 960, 980, 1_000].map((block_number) => ({ block_number, canonical: true }));
+  for (const row of financialRows) if (row.block_number >= Number(ancestor.replayFrom)) row.canonical = false;
+  assert.ok(financialRows.filter((row) => row.block_number > 700).every((row) => !row.canonical),
+    "rows after the true common ancestor, including rows before the operator's too-high height, must be orphaned");
+  assert.equal(financialRows.find((row) => row.block_number === 740).canonical, false);
+});
+
+test("deep reorg recovery halts without a saved current-chain ancestor", async () => {
+  await assert.rejects(logic.findVerifiedCommonAncestor({
     startBlock: BigInt(1),
-    checkpointBlock,
-    replayFrom,
-    expectedAncestorHash: ancestorHash,
-    actualAncestorHash: `0x${"b".repeat(64)}`,
-  }), /ancestor hash mismatch/);
-  assert.throws(() => logic.verifiedRecoveryStart({
-    startBlock: BigInt(1),
-    checkpointBlock,
-    replayFrom: BigInt(1_001),
-    expectedAncestorHash: ancestorHash,
-    actualAncestorHash: ancestorHash,
-  }), /no later than the stale checkpoint/);
+    checkpointBlock: BigInt(1_000),
+    checkpoints: [
+      { block_number: 1_000, block_hash: `0x${"1".repeat(64)}` },
+      { block_number: 980, block_hash: `0x${"2".repeat(64)}` },
+    ],
+    getCanonicalHash: async () => `0x${"b".repeat(64)}`,
+  }), /No previously indexed checkpoint matches/);
+});
+
+test("verified deep reorg rolls back above the finalized head and waits for replay", async () => {
+  const rollbacks = [];
+  const plan = await logic.prepareDeepReorgRecovery({
+    ancestorBlock: BigInt(980),
+    finalizedHead: BigInt(946),
+    batchSize: BigInt(500),
+    rollbackFrom: async (blockNumber) => rollbacks.push(blockNumber),
+  });
+
+  assert.deepEqual(rollbacks, [981], "orphan rows are invalidated even when no finalized replay range exists");
+  assert.equal(plan.from, BigInt(981));
+  assert.equal(plan.to, BigInt(946));
+  assert.equal(plan.status, "waiting-for-finality");
+});
+
+test("event batches must match canonical event-block and range-end hashes", () => {
+  const events = [
+    { blockNumber: 100, blockHash: `0x${"a".repeat(64)}` },
+    { blockNumber: 101, blockHash: `0x${"b".repeat(64)}` },
+  ];
+  const canonicalHashes = new Map([
+    [100, `0x${"A".repeat(64)}`],
+    [101, `0x${"b".repeat(64)}`],
+  ]);
+  assert.doesNotThrow(() => logic.assertEventBlockHashesCanonical(events, canonicalHashes));
+  assert.throws(() => logic.assertEventBlockHashesCanonical(events, new Map([[100, `0x${"c".repeat(64)}`]])), /block hash mismatch/);
+  assert.throws(() => logic.assertEventBlockHashesCanonical(events, new Map([[100, `0x${"a".repeat(64)}`]])), /Missing canonical block hash/);
+  assert.doesNotThrow(() => logic.assertRangeEndHashStable(BigInt(101), `0x${"d".repeat(64)}`, `0x${"D".repeat(64)}`));
+  assert.throws(() => logic.assertRangeEndHashStable(BigInt(101), `0x${"d".repeat(64)}`, `0x${"e".repeat(64)}`), /chain changed/);
 });
 
 test("protocol launch-fee claim persistence preserves exact raw integer strings", () => {
@@ -128,4 +174,24 @@ test("protocol launch-fee claim persistence preserves exact raw integer strings"
   upserts.set(eventKey, row);
   upserts.set(eventKey, logic.protocolLaunchFeeClaimRecord(event));
   assert.equal(upserts.size, 1, "replaying a claim log is idempotent under its chain/tx/log key");
+});
+
+test("pool price persistence preserves exact sqrtPriceX96 as a decimal string", () => {
+  const rawPrice = "1461501637330902918203684832716283019655932542975";
+  const record = logic.projectPriceEventRecord({
+    type: "PoolPriceUpdated",
+    chainId: 4663,
+    contractAddress: "0xPoolManager",
+    txHash: "0xPrice",
+    logIndex: 7,
+    blockNumber: 300,
+    blockHash: `0x${"d".repeat(64)}`,
+    poolId: `0x${"e".repeat(64)}`,
+    sqrtPriceX96: rawPrice,
+    source: "swap",
+  }, "project-id");
+  assert.equal(record.sqrt_price_x96, rawPrice);
+  assert.equal(BigInt(record.sqrt_price_x96), BigInt(rawPrice));
+  assert.equal(logic.sqrtPriceX96ToEthPerToken("79228162514264337593543950336"), 1);
+  assert.equal(record.canonical, true);
 });

@@ -8,10 +8,11 @@ import type {
   FeesAllocatedEvent,
   FeesClaimedEvent,
   LiquidityCreditedEvent,
+  PoolPriceUpdatedEvent,
   SplitConfiguredEvent,
   TokenLaunchedEvent,
 } from "./types";
-import { launchProjectUpsert, protocolLaunchFeeClaimRecord } from "./remediation-logic";
+import { launchProjectUpsert, projectPriceEventRecord, protocolLaunchFeeClaimRecord } from "./remediation-logic";
 
 function normalizeAddress(value: string) { return value.toLowerCase(); }
 
@@ -41,7 +42,15 @@ export async function upsertLaunch(event: TokenLaunchedEvent) {
     canonical: true,
   }, { onConflict: "project_id" });
   if (launchError) throw new Error(`Indexer launch record upsert failed: ${launchError.message}`);
+  await upsertPriceEvent({ ...event, type: "PoolPriceUpdated", source: "launch" }, event.tokenAddress);
   return data.id;
+}
+
+export async function upsertPriceEvent(event: PoolPriceUpdatedEvent, tokenAddress: string) {
+  const projectId = await requireProject(event.chainId, tokenAddress);
+  const { error } = await createIndexerSupabaseClient().from("project_price_events")
+    .upsert(projectPriceEventRecord(event, projectId), { onConflict: "chain_id,tx_hash,log_index" });
+  if (error) throw new Error(`Indexer pool-price upsert failed: ${error.message}`);
 }
 
 export async function upsertFeeConfiguration(event: SplitConfiguredEvent, tokenAddress: string) {
@@ -192,13 +201,48 @@ export async function upsertLiquidityCredit(event: LiquidityCreditedEvent, token
 }
 
 export async function saveIndexerCheckpoint(chainId: number, contractAddress: string, lastProcessedBlock: number, lastProcessedBlockHash: string) {
-  const { error } = await createIndexerSupabaseClient().from("indexer_state").upsert({
+  const client = createIndexerSupabaseClient();
+  const normalizedAddress = normalizeAddress(contractAddress);
+  const { data: latestHistory, error: historyLookupError } = await client
+    .from("indexer_block_checkpoints")
+    .select("block_number")
+    .eq("chain_id", chainId)
+    .eq("contract_address", normalizedAddress)
+    .order("block_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (historyLookupError) throw new Error(`Indexer checkpoint history lookup failed: ${historyLookupError.message}`);
+
+  const checkpointInterval = 10_000;
+  if (!latestHistory || lastProcessedBlock - latestHistory.block_number >= checkpointInterval) {
+    const { error: historyWriteError } = await client.from("indexer_block_checkpoints").upsert({
+      chain_id: chainId,
+      contract_address: normalizedAddress,
+      block_number: lastProcessedBlock,
+      block_hash: lastProcessedBlockHash.toLowerCase(),
+    }, { onConflict: "chain_id,contract_address,block_number" });
+    if (historyWriteError) throw new Error(`Indexer checkpoint history write failed: ${historyWriteError.message}`);
+  }
+
+  const { error } = await client.from("indexer_state").upsert({
     chain_id: chainId,
-    contract_address: normalizeAddress(contractAddress),
+    contract_address: normalizedAddress,
     last_processed_block: lastProcessedBlock,
     last_processed_block_hash: lastProcessedBlockHash.toLowerCase(),
   }, { onConflict: "chain_id,contract_address" });
   if (error) throw new Error(`Indexer checkpoint update failed: ${error.message}`);
+}
+
+export async function getIndexerCheckpointHistory(chainId: number, contractAddress: string) {
+  const { data, error } = await createIndexerSupabaseClient()
+    .from("indexer_block_checkpoints")
+    .select("block_number,block_hash")
+    .eq("chain_id", chainId)
+    .eq("contract_address", normalizeAddress(contractAddress))
+    .order("block_number", { ascending: false })
+    .limit(10_000);
+  if (error) throw new Error(`Indexer checkpoint history lookup failed: ${error.message}`);
+  return data ?? [];
 }
 
 export async function getIndexerCheckpoint(chainId: number, contractAddress: string) {

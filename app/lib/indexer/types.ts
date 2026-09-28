@@ -24,6 +24,13 @@ export type TokenLaunchedEvent = ChainEvent & {
   lpFee: number;
 };
 
+export type PoolPriceUpdatedEvent = ChainEvent & {
+  type: "PoolPriceUpdated";
+  poolId: string;
+  sqrtPriceX96: string;
+  source: "launch" | "swap";
+};
+
 export type SplitConfiguredEvent = ChainEvent & {
   type: "SplitConfigured";
   poolId: string;
@@ -96,6 +103,7 @@ export type LiquidityCreditedEvent = ChainEvent & {
 
 export type SplitIndexerEvent =
   | TokenLaunchedEvent
+  | PoolPriceUpdatedEvent
   | SplitConfiguredEvent
   | FeesAccruedEvent
   | FeesAllocatedEvent

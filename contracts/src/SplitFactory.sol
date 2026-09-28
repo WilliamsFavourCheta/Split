@@ -139,7 +139,6 @@ contract SplitFactory {
             uint16(p.communityBps)
         );
         hook.registerPool(key);
-        liquidityVault.registerPool(poolId, key.currency0, key.currency1);
         tokenForPool[poolId] = token;
         poolForToken[token] = poolId;
         launchedToken[token] = true;
@@ -148,6 +147,8 @@ contract SplitFactory {
         catch {
             revert PoolInitializationFailed();
         }
+
+        liquidityVault.registerPool(poolId, key.currency0, key.currency1);
 
         require(newToken.transfer(address(liquidityVault), p.tokenSeedAmount), "SEED_TRANSFER_FAILED");
         liquidityVault.seedPosition{value: p.seedQuoteAmount}(
