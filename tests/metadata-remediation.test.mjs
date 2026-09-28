@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { verifyMessage } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
+import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import ts from "../node_modules/typescript/lib/typescript.js";
 
 async function loadPureModule(path) {
@@ -19,8 +19,8 @@ const image = await loadPureModule("../app/lib/projects/image-validation.ts");
 const migration = await readFile(new URL("../supabase/migrations/202609280005_throttle_project_metadata_updates.sql", import.meta.url), "utf8");
 
 test("real creator signature rejects cross-token, changed image, changed fields, wrong creator, and stale nonce", async () => {
-  const creator = privateKeyToAccount(`0x${"1".padStart(64, "0")}`);
-  const other = privateKeyToAccount(`0x${"2".padStart(64, "0")}`);
+  const creator = privateKeyToAccount(generatePrivateKey());
+  const other = privateKeyToAccount(generatePrivateKey());
   const token = "0x1111111111111111111111111111111111111111";
   const otherToken = "0x2222222222222222222222222222222222222222";
   const imageDigest = `0x${createHash("sha256").update("image-a").digest("hex")}`;
