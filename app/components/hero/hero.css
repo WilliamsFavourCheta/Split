@@ -40,7 +40,7 @@
 .fee-core-logo { width:122px;height:auto;filter:drop-shadow(0 0 10px rgba(173,108,255,.48)); }
 .fee-core-label small { font-size:7px;letter-spacing:.2em;color:#a883d1; }
 .fee-input-label { left:36%;top:55%;text-transform:uppercase;font-size:10px;letter-spacing:.2em;color:#d4b6ef;pointer-events:none;text-shadow:0 0 15px #9e4df4; }
-.fee-destination { width:160px;min-height:65px;border:0;background:transparent;color:#fbf6ff;display:flex;align-items:center;justify-content:center;gap:18px;cursor:pointer;opacity:var(--route-dim,1);text-align:left;border-radius:12px;transition:box-shadow .25s,opacity .25s; }
+.fee-destination { width:160px;min-height:65px;border:0;background:rgba(118,58,178,calc(var(--arrival,0) * .14));color:#fbf6ff;display:flex;align-items:center;justify-content:center;gap:18px;cursor:pointer;opacity:var(--route-dim,1);text-align:left;border-radius:12px;box-shadow:0 0 calc(var(--arrival,0) * 30px) rgba(173,96,255,.68),inset 0 0 calc(var(--arrival,0) * 17px) rgba(184,113,255,.22);transition:box-shadow .16s,background .16s,opacity .25s; }
 .fee-destination > svg { color:#b764ff;width:23px;height:23px;filter:drop-shadow(0 0 9px #a24fff); }
 .fee-destination > span:not(.fee-allocation-note) { display:grid;gap:3px; }
 .fee-destination small { text-transform:uppercase;font-size:9px;letter-spacing:.06em; }

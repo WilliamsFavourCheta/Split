@@ -38,8 +38,10 @@ function makeGlowTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 
-export function SplitCore(chrome: THREE.Material, glass: THREE.Material) {
+export function SplitCore(chrome: THREE.Material, glass: THREE.Material, texture: THREE.Texture) {
   const group = new THREE.Group();
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, color: 0xc482ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.position.z = -.32; halo.scale.set(4.6, 5.2, 1); group.add(halo);
   const body = new THREE.Mesh(new RoundedBoxGeometry(2.05, 2.75, .65, 4, .22), glass);
   group.add(body);
   for (const z of [-.42, -.12, .35, .48]) {
@@ -59,7 +61,8 @@ export function SplitCore(chrome: THREE.Material, glass: THREE.Material) {
     const bolt = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, .04, 8), chrome);
     bolt.rotation.x = Math.PI / 2; bolt.position.set(x, y, .52); group.add(bolt);
   }
-  return { group, inner, lightMaterial, channels };
+  const impactLight = new THREE.PointLight(0xb55fff, 0, 7, 1.7); impactLight.position.z = 1.1; group.add(impactLight);
+  return { group, inner, lightMaterial, channels, halo, impactLight };
 }
 
 export function FeeOrb(texture: THREE.Texture) {
@@ -92,19 +95,22 @@ export function RoutingTube(curve: THREE.Curve<THREE.Vector3>, radius: number, g
 
 export const IncomingConduit = RoutingTube;
 
-export function DestinationNode(chrome: THREE.Material, glass: THREE.Material, mobile: boolean) {
+export function DestinationNode(chrome: THREE.Material, glass: THREE.Material, texture: THREE.Texture, mobile: boolean) {
   const group = new THREE.Group();
   const width = mobile ? 1.55 : 2.35;
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, color: 0xb767ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.position.z = -.18; halo.scale.set(width * 1.8, 1.75, 1); group.add(halo);
   const body = new THREE.Mesh(new RoundedBoxGeometry(width, .94, .28, 3, .13), glass); group.add(body);
   const front = new THREE.Mesh(new RoundedBoxGeometry(width - .13, .8, .04, 2, .09), new THREE.MeshPhysicalMaterial({ color: 0x090411, metalness: .5, roughness: .24, clearcoat: 1 }));
   front.position.z = .16; group.add(front);
   const edge = frame(width - .05, .87, .06, chrome); edge.position.z = .12; group.add(edge);
   const lightMaterial = new THREE.MeshBasicMaterial({ color: purple, transparent: true, opacity: .3 });
   const rim = frame(width - .14, .77, .018, lightMaterial); rim.position.z = .19; group.add(rim);
-  return { group, lightMaterial };
+  const arrivalLight = new THREE.PointLight(0xb35fff, 0, mobile ? 3.2 : 4.5, 2); arrivalLight.position.z = .8; group.add(arrivalLight);
+  return { group, lightMaterial, halo, arrivalLight };
 }
 
-export function EnergyParticles(curve: THREE.Curve<THREE.Vector3>, count: number, radius: number, texture: THREE.Texture) {
+export function EnergyParticles(curve: THREE.Curve<THREE.Vector3>, count: number, radius: number, texture: THREE.Texture, size = .065) {
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3);
   const initialPoint = new THREE.Vector3();
@@ -116,9 +122,9 @@ export function EnergyParticles(curve: THREE.Curve<THREE.Vector3>, count: number
   }
   geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   geometry.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 30);
-  const material = new THREE.PointsMaterial({ color: 0xdec3ff, size: .065, map: texture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  const material = new THREE.PointsMaterial({ color: 0xffffff, size, map: texture, transparent: true, opacity: .98, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending });
   const points = new THREE.Points(geometry, material);
-  points.frustumCulled = false;
+  points.frustumCulled = false; points.renderOrder = 8;
   const point = new THREE.Vector3();
   return { points, update(head: number, spread: number, activity: number) {
     const safeHead = Number.isFinite(head) ? head : 0;
@@ -177,7 +183,7 @@ export function createHeroScene(options: Options) {
   function build() {
     clearAssembly(); nodes = []; routes = [];
     const center = mobile ? V(-.95, .6) : V(1.65, .35);
-    core = SplitCore(chrome, glass); core.group.position.copy(center); core.group.scale.setScalar(mobile ? .68 : 1.08); assembly.add(core.group);
+    core = SplitCore(chrome, glass, glowTexture); core.group.position.copy(center); core.group.scale.setScalar(mobile ? .68 : 1.08); assembly.add(core.group);
     incoming = new THREE.CubicBezierCurve3(mobile ? V(-2.5, 3.35, -.1) : V(-8, .3, -.3), mobile ? V(-3.4, 1.4, .5) : V(-5, -.9, .4), mobile ? V(-3, .6, .3) : V(-1.7, -.2, .3), center.clone().add(V(mobile ? -.68 : -1.08, 0)));
     inlet = IncomingConduit(incoming, mobile ? .16 : .26, glass, chrome, mobile ? 36 : 64); assembly.add(inlet.group);
     orb = FeeOrb(glowTexture); if (mobile) orb.group.scale.setScalar(.7); assembly.add(orb.group);
@@ -189,9 +195,9 @@ export function createHeroScene(options: Options) {
       const curve = new THREE.CubicBezierCurve3(start, start.clone().add(V(mobile ? .75 : 1.35, 0, .15)), end.clone().add(V(mobile ? -.7 : -1.2, 0, .15)), end);
       const radius = (mobile ? .08 : .13) * Math.sqrt(shares[i] / 10);
       const tube = RoutingTube(curve, radius, glass, chrome, mobile ? 32 : 56); assembly.add(tube.group);
-      const particles = EnergyParticles(curve, (mobile ? 6 : 12) * (4 - i), radius, glowTexture); assembly.add(particles.points);
+      const particles = EnergyParticles(curve, (mobile ? 10 : 16) * (4 - i), radius, glowTexture, mobile ? .14 : .12); assembly.add(particles.points);
       routes.push({ tube, particles });
-      const node = DestinationNode(chrome, glass, mobile); node.group.position.copy(destination); nodes.push(node); assembly.add(node.group);
+      const node = DestinationNode(chrome, glass, glowTexture, mobile); node.group.position.copy(destination); nodes.push(node); assembly.add(node.group);
     }
   }
   let disposed = false, frameId = 0, visible = true, lastTime = 0, elapsed = 0;
@@ -238,7 +244,8 @@ export function createHeroScene(options: Options) {
     const damping = 1 - Math.exp(-dt * 7);
     progress = reduced ? targetProgress : THREE.MathUtils.lerp(progress, targetProgress, damping);
     dampedPointer.lerp(reduced ? new THREE.Vector2() : pointer, damping * .65);
-    const state = feeJourney(reduced ? 0 : progress);
+    const journeyProgress = reduced ? .76 : progress;
+    const state = feeJourney(journeyProgress);
     // Camera response has inertia; the model never follows the pointer position.
     assembly.rotation.set(-dampedPointer.y * .065, dampedPointer.x * .095 - (mobile ? .025 : .085), -.015);
     assembly.position.x = mobile ? -.36 : 0;
@@ -253,32 +260,45 @@ export function createHeroScene(options: Options) {
     orb.halo.material.opacity = .7 + hover * .25; orb.light.intensity = (4 + hover * 3) * state.orb;
     inlet.energyMaterial.opacity = .08 + hover * .1 + state.processing * .15;
     trail.update(state.incoming, .18, elapsed * (.3 + hover)); trail.points.visible = state.orb > .05;
-    core.lightMaterial.opacity = .35 + state.processing * .65;
-    core.inner.material.opacity = .8 - state.processing * .65;
+    const coreScale = mobile ? .68 : 1.08;
+    core.group.scale.setScalar(coreScale * (1 + state.coreImpact * .055));
+    core.lightMaterial.opacity = Math.min(1, .28 + state.processing * .55 + state.coreImpact * .72);
+    core.inner.material.opacity = Math.max(.08, .8 - state.processing * .58 - state.coreImpact * .34);
     core.channels.scale.y = .6 + state.division * .4;
-    coreLabel.style.opacity = `${1 - state.processing * .65}`;
+    core.halo.material.opacity = .04 + state.processing * .13 + state.coreImpact * .72;
+    core.impactLight.intensity = state.processing * 2.5 + state.coreImpact * 11;
+    coreLabel.style.opacity = `${1 - state.processing * .5}`;
     assembly.updateMatrixWorld(true);
     nodes.forEach((node, i) => {
       const focused = selected.current === i;
       const dim = selected.current >= 0 && !focused ? .25 : 1;
-      const pulse = Math.sin(ramp(progress, .74, .86) * Math.PI) ** 2;
-      node.lightMaterial.opacity = (.3 + state.arrival * .4 + pulse * .3 + (focused ? .3 : 0)) * dim;
+      const travelStart = .44 + i * .006;
+      const travelEnd = .595 + i * .008;
+      const routeHead = ramp(journeyProgress, travelStart, travelEnd);
+      const routeArrival = ramp(journeyProgress, travelEnd - .012, travelEnd + .055);
+      const arrivalPulse = Math.sin(ramp(journeyProgress, travelEnd - .025, travelEnd + .07) * Math.PI) ** 2;
+      const particleFade = 1 - ramp(journeyProgress, travelEnd + .035, travelEnd + .11);
+      const destinationGlow = Math.min(1, routeArrival * .72 + arrivalPulse);
+      node.lightMaterial.opacity = Math.min(1, (.22 + routeArrival * .58 + arrivalPulse * .55 + (focused ? .28 : 0)) * dim);
+      node.halo.material.opacity = (.025 + routeArrival * .24 + arrivalPulse * .72 + (focused ? .2 : 0)) * dim;
+      node.arrivalLight.intensity = (routeArrival * 2.2 + arrivalPulse * 8 + (focused ? 2 : 0)) * dim;
+      node.group.scale.setScalar(1 + arrivalPulse * .06);
       const route = routes[i];
-      route.tube.energy.geometry.setDrawRange(0, Math.floor((route.tube.energy.geometry.index?.count ?? 0) * state.outgoing / 6) * 6);
-      route.tube.energyMaterial.opacity = (.4 + shares[i] / 100 + (focused ? .3 : 0)) * dim;
+      route.tube.energy.geometry.setDrawRange(0, Math.floor((route.tube.energy.geometry.index?.count ?? 0) * routeHead / 6) * 6);
+      route.tube.energyMaterial.opacity = Math.min(1, (.34 + shares[i] / 120 + arrivalPulse * .22 + (focused ? .25 : 0)) * dim);
       // Inspection illuminates the whole selected path, independent of scroll position.
       if (focused) route.tube.energy.geometry.setDrawRange(0, Infinity);
-      route.particles.points.visible = state.outgoing > .01;
-      route.particles.points.material.opacity = dim;
-      route.particles.update(state.outgoing, .26 + shares[i] / 100, elapsed * .28);
+      route.particles.points.visible = routeHead > .01 && particleFade > .01;
+      route.particles.points.material.opacity = particleFade * dim;
+      route.particles.update(routeHead, mobile ? .2 : .24, elapsed * 1.8 + i * .7);
       project(labels[i], node.group.position.clone().add(V(0, 0, .24)));
-      labels[i]?.style.setProperty("--arrival", String(state.arrival));
+      labels[i]?.style.setProperty("--arrival", String(destinationGlow));
       labels[i]?.style.setProperty("--route-dim", String(dim));
     });
     project(coreLabel, core.group.position.clone().add(V(0, 0, .6)));
     project(incomingLabel, incoming.getPoint(.36).add(V(0, .44, 0)));
     progressBar.style.transform = `scaleX(${progress})`;
-    const phase = Math.min(4, Math.floor(progress * 5));
+    const phase = Math.min(4, Math.floor(journeyProgress * 5));
     phaseLabel.textContent = ["01 / A fee enters", "02 / Inside the core", "03 / Programmed to split", "04 / Every share delivered", "05 / Your rules. In motion."][phase];
     viewport.style.setProperty("--journey-exit", String(state.exit));
     renderer.render(scene, camera);
