@@ -25,11 +25,21 @@ export async function uploadConfirmedProjectMetadata(input: {
   const fieldsBytes = new TextEncoder().encode(projectMetadataFields(input.draft));
   const fieldsHash = new Uint8Array(await crypto.subtle.digest("SHA-256", fieldsBytes));
   const fieldsDigest = `0x${Array.from(fieldsHash, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+  const stateResponse = await fetch(`/api/projects/metadata?token=${encodeURIComponent(input.token)}`, { cache: "no-store" });
+  const state = await stateResponse.json() as { nonce?: number; retryAfter?: number; error?: string };
+  const nonce = state.nonce;
+  if (!stateResponse.ok || typeof nonce !== "number" || !Number.isSafeInteger(nonce) || nonce < 0) {
+    throw new Error(state.error || "Project metadata update state is unavailable.");
+  }
+  if (state.retryAfter && state.retryAfter > 0) {
+    throw new Error(`Project metadata can be updated again in ${state.retryAfter} seconds.`);
+  }
   const expiresAt = Date.now() + 5 * 60_000;
-  const signature = await input.walletClient.signMessage({ account: input.account, message: projectMetadataMessage(input.token, digest, fieldsDigest, expiresAt) });
+  const signature = await input.walletClient.signMessage({ account: input.account, message: projectMetadataMessage(input.token, digest, fieldsDigest, expiresAt, nonce) });
   const form = new FormData();
   form.set("token", input.token);
   form.set("expiresAt", String(expiresAt));
+  form.set("nonce", String(nonce));
   form.set("signature", signature);
   if (blob) form.set("image", blob, "token-logo.webp");
   for (const key of ["description", "website", "twitter", "telegram", "discord"] as const) form.set(key, input.draft[key]);

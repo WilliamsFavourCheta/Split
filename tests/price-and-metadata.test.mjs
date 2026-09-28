@@ -43,11 +43,12 @@ test("chart period selection handles zero, one, and many canonical observations"
 test("metadata signature binds token, image, fields, and expiry", () => {
   const fields = { description: "A", website: "", twitter: "", telegram: "", discord: "" };
   assert.notEqual(metadata.projectMetadataFields(fields), metadata.projectMetadataFields({ ...fields, description: "B" }));
-  const base = metadata.projectMetadataMessage("0xabc", "0x123", "0x456", 100);
-  assert.notEqual(base, metadata.projectMetadataMessage("0xdef", "0x123", "0x456", 100));
-  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x124", "0x456", 100));
-  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x123", "0x457", 100));
-  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x123", "0x456", 101));
+  const base = metadata.projectMetadataMessage("0xabc", "0x123", "0x456", 100, 0);
+  assert.notEqual(base, metadata.projectMetadataMessage("0xdef", "0x123", "0x456", 100, 0));
+  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x124", "0x456", 100, 0));
+  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x123", "0x457", 100, 0));
+  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x123", "0x456", 101, 0));
+  assert.notEqual(base, metadata.projectMetadataMessage("0xabc", "0x123", "0x456", 100, 1));
 });
 
 test("upload validation rejects mismatched executable data and accepts supported image headers", () => {

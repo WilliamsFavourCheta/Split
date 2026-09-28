@@ -39,9 +39,14 @@ export type Database = {
       indexer_state: Table<{ id:string; chain_id:number; contract_address:string; last_processed_block:number; last_processed_block_hash:string|null; updated_at:string }>;
       indexer_block_checkpoints: Table<{ chain_id:number; contract_address:string; block_number:number; block_hash:string; created_at:string }>;
       project_metadata: Table<{ id:string; project_id:string; description:string|null; logo_url:string|null; banner_url:string|null; website_url:string|null; x_url:string|null; telegram_url:string|null; discord_url:string|null; updated_by_wallet:string|null; updated_at:string }>;
+      project_metadata_update_state: Table<{ project_id:string; nonce:number; next_allowed_at:string; claim_expires_at:string|null }>;
     };
     Views: RawAmountViews;
-    Functions: { mark_chain_events_noncanonical: { Args: { p_chain_id:number; p_from_block:number }; Returns:undefined } };
+    Functions: {
+      mark_chain_events_noncanonical: { Args: { p_chain_id:number; p_from_block:number }; Returns:undefined };
+      claim_project_metadata_update: { Args: { p_project_id:string; p_expected_nonce:number }; Returns:number|null };
+      complete_project_metadata_update: { Args: { p_project_id:string; p_claim_nonce:number; p_logo_url:string|null; p_description:string|null; p_website_url:string|null; p_x_url:string|null; p_telegram_url:string|null; p_discord_url:string|null; p_updated_by_wallet:string }; Returns:boolean };
+    };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
   };
