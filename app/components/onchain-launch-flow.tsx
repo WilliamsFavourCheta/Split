@@ -14,9 +14,9 @@ import { useLaunchDraft, useToast, useWallet } from "./providers";
 import { AppShell } from "./shell";
 import { Icon } from "./icons";
 import { SplitStrip } from "./visuals";
-import { targetChainId } from "../web3/chains";
+import { robinhoodMainnet, targetChainId } from "../web3/chains";
 import { getTransactionExplorerUrl } from "../web3/explorer";
-import { toWalletErrorMessage } from "../web3/errors";
+import { toLaunchErrorMessage } from "../web3/errors";
 import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 
 type TxState = "idle" | "awaiting-signature" | "pending" | "indexing" | "error";
@@ -32,6 +32,7 @@ export function OnchainLaunchReview() {
   const [txState, setTxState] = useState<TxState>("idle");
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+  const [txNotice, setTxNotice] = useState<string | null>(null);
   const allocations: Allocation[] = DEFAULT_SPLIT.map((item) => ({ ...item, value: draft.allocations[item.key] }));
   let totalEthRequired = "Unavailable";
   try { totalEthRequired = formatEther(parseEther(draft.initialLiquidity) + parseEther("0.0005")); } catch { /* incomplete draft */ }
@@ -40,15 +41,35 @@ export function OnchainLaunchReview() {
     || wallet.status === "connecting" || wallet.status === "restoring" || wallet.status === "switching" || wallet.status === "disconnecting";
 
   const deploy = async () => {
+    setTxError(null);
+    setTxNotice(null);
     if (!productionLaunchEnabled) {
       setTxError("Production token launching is disabled in this pre-launch preview. No transaction was sent.");
       setTxState("error");
       return;
     }
-    if (wallet.status === "wrong-network") { await wallet.switchNetwork(); return; }
-    if (wallet.status !== "connected" || !wallet.address) { await wallet.openWallet(); return; }
-    if (!factoryAddress || !walletClient || !publicClient || !connector) {
-      setTxError("No verified SPLIT factory is configured for this network yet. No transaction was sent.");
+    if (wallet.status === "wrong-network") {
+      setTxNotice("Switching networks does not submit a launch. Once connected to Robinhood Chain, click Deploy token.");
+      await wallet.switchNetwork();
+      return;
+    }
+    if (wallet.status !== "connected" || !wallet.address) {
+      setTxNotice("Connecting your wallet does not submit a launch. Once connected, click Deploy token to request the transaction.");
+      await wallet.openWallet();
+      return;
+    }
+    if (!factoryAddress) {
+      setTxError("The verified SPLIT Factory is not configured for this network. No transaction was sent.");
+      setTxState("error");
+      return;
+    }
+    if (!walletClient || !connector) {
+      setTxError("The wallet session is still initializing. Wait a moment or reconnect, then click Deploy token. No transaction was sent.");
+      setTxState("error");
+      return;
+    }
+    if (!publicClient) {
+      setTxError("Robinhood Chain RPC is unavailable. No transaction was sent.");
       setTxState("error");
       return;
     }
@@ -68,17 +89,17 @@ export function OnchainLaunchReview() {
     const launchFee = parseEther("0.0005");
     try {
       if (draft.name.trim().length < 2 || new TextEncoder().encode(draft.name.trim()).length > 64
-        || !/^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim())) throw new Error("invalid token details");
+        || !/^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim())) throw new Error("Enter a 2–64 byte name and a 2–8 character letter/number symbol. No transaction was sent.");
       quoteAmount = parseEther(draft.initialLiquidity);
       tokenSeedAmount = parseEther(draft.tokenSeedAmount);
-      if (quoteAmount <= BigInt(0) || tokenSeedAmount <= BigInt(0) || tokenSeedAmount > BigInt(1_000_000_000) * BigInt(10) ** BigInt(18)) throw new Error("invalid seed amounts");
-      if (!Object.values(draft.allocations).every((value) => Number.isInteger(value) && value >= 0 && value <= 100)) throw new Error("invalid percentages");
-      if (Object.values(draft.allocations).reduce((sum, value) => sum + value, 0) !== 100) throw new Error("invalid allocations");
-      if (draft.quoteAsset !== "ETH") throw new Error("unsupported quote asset");
-      if (draft.allocations.projectTreasury > 0 && !isAddress(draft.projectTreasuryAddress)) throw new Error("invalid project treasury");
-      if (!isAddress(draft.communityAddress)) throw new Error("invalid community destination");
-    } catch {
-      setTxError("Check both seed amounts, the ETH quote asset, the project destinations, and the 100% project split before trying again.");
+      if (quoteAmount <= BigInt(0) || tokenSeedAmount <= BigInt(0) || tokenSeedAmount > BigInt(1_000_000_000) * BigInt(10) ** BigInt(18)) throw new Error("Enter positive seed amounts, with no more than 1 billion seed tokens. No transaction was sent.");
+      if (!Object.values(draft.allocations).every((value) => Number.isInteger(value) && value >= 0 && value <= 100)
+        || Object.values(draft.allocations).reduce((sum, value) => sum + value, 0) !== 100) throw new Error("Project allocation percentages must be whole numbers totaling 100%. No transaction was sent.");
+      if (draft.quoteAsset !== "ETH") throw new Error("Only ETH is supported as the quote asset. No transaction was sent.");
+      if (draft.allocations.projectTreasury > 0 && !isAddress(draft.projectTreasuryAddress)) throw new Error("Enter a valid project treasury address. No transaction was sent.");
+      if (!isAddress(draft.communityAddress)) throw new Error("Enter a valid community address. No transaction was sent.");
+    } catch (error) {
+      setTxError(error instanceof Error ? error.message : "Check the launch fields before trying again. No transaction was sent.");
       setTxState("error");
       return;
     }
@@ -157,9 +178,9 @@ export function OnchainLaunchReview() {
       if (submittedHash) setTxHash(submittedHash);
       const message = chainConfirmed
         ? "Launch confirmed. Indexing is still catching up; inspect the transaction while it syncs."
-        : error instanceof Error && /Switch your wallet|active wallet account changed/.test(error.message)
-          ? error.message
-          : toWalletErrorMessage(error);
+        : submittedHash
+          ? `A launch transaction was submitted, but confirmation failed. ${toLaunchErrorMessage(error)} Check its transaction link before retrying.`
+          : `No launch transaction hash was returned. ${toLaunchErrorMessage(error)}`;
       setTxError(message);
       setTxState(chainConfirmed ? "indexing" : "error");
       showToast(message, chainConfirmed ? "default" : "error");
@@ -196,6 +217,7 @@ export function OnchainLaunchReview() {
       <div className="deploy-cost"><span>Target network</span><strong>{wallet.targetChainName}</strong><span>Factory</span><strong>{factoryAddress ? `${factoryAddress.slice(0, 8)}...${factoryAddress.slice(-6)}` : "Not configured"}</strong><span>Fee configuration</span><strong>{factoryAddress ? "Onchain / immutable" : "Awaiting verified deployment"}</strong></div>
       <button className="button button-primary deploy-button" disabled={!productionLaunchEnabled || busy || (!factoryAddress && wallet.status === "connected")} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled ? "lock" : wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
       {txHash && transactionUrl ? <a className="deploy-disclaimer" href={transactionUrl} target="_blank" rel="noreferrer">View transaction {txHash.slice(0, 10)}...</a> : null}
+      {txNotice ? <p className="deploy-disclaimer" role="status">{txNotice}</p> : null}
       {txError ? <p className="form-error" role="alert">{txError}</p> : null}
       <small className="deploy-disclaimer"><Icon name="lock" />No database write is treated as a launch. The confirmed chain event is the source of truth.</small>
     </aside>
@@ -216,6 +238,16 @@ export function OnchainLaunchSuccessPage() {
   const [verification, setVerification] = useState("Verifying the launch receipt on Robinhood Chain...");
   const [metadataState, setMetadataState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
   const hasMetadata = Boolean(draft.logoDataUrl || draft.description.trim() || draft.website.trim() || draft.twitter.trim() || draft.telegram.trim() || draft.discord.trim());
+
+  const copyTokenAddress = async () => {
+    if (!confirmed) return;
+    try {
+      await navigator.clipboard.writeText(confirmed.token);
+      showToast("Token contract address copied", "success");
+    } catch {
+      showToast("Clipboard permission was blocked", "error");
+    }
+  };
 
   useEffect(() => {
     const hash = new URLSearchParams(window.location.search).get("tx");
@@ -260,6 +292,7 @@ export function OnchainLaunchSuccessPage() {
     <span className="eyebrow">Robinhood Chain receipt</span>
     <h1>{confirmed ? <>Launch<br /><span>confirmed.</span></> : <>Launch status<br /><span>unverified.</span></>}</h1>
     <p>{confirmed ? `Factory event confirms token ${confirmed.token}. The indexer and logo may still be syncing.` : verification}</p>
+    {confirmed ? <div className="success-contract glass-panel"><span className="eyebrow">Token contract address (CA)</span><code>{confirmed.token}</code><div className="success-contract-actions"><button className="button button-primary" onClick={() => void copyTokenAddress()}><Icon name="copy" size={15} /> Copy CA</button><a className="button button-outline" href={`${robinhoodMainnet.blockExplorers.default.url}/address/${confirmed.token}`} target="_blank" rel="noreferrer">View contract <Icon name="external" size={15} /></a></div></div> : null}
     {confirmed ? <div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link><a className="button button-outline" href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View transaction</a>{hasMetadata && metadataState !== "saved" ? <button className="button button-outline" disabled={metadataState === "saving" || wallet.status !== "connected"} onClick={() => void saveLogo()}>{metadataState === "saving" ? "Saving metadata..." : "Save project metadata"}</button> : null}</div> : null}
     {confirmed && hasMetadata && metadataState !== "saved" ? <p>Keep this local draft until its metadata is saved. A wallet signature is required; no chain transaction is sent for metadata.</p> : null}
     <div className="success-actions"><button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>

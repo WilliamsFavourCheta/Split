@@ -12,6 +12,24 @@ function getErrorText(error: unknown): string {
   return typeof error === "string" ? error : "";
 }
 
+function getSafeWalletDetail(error: unknown): string | null {
+  let current: unknown = error;
+  const details: string[] = [];
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const detail = "shortMessage" in current && typeof current.shortMessage === "string"
+      ? current.shortMessage
+      : getErrorText(current);
+    if (detail) {
+      const safe = detail.split(/\r?\n/)[0].trim()
+        .replace(/https?:\/\/[^\s"'`]+/g, "[RPC endpoint]")
+        .replace(/0x[\da-fA-F]{64,}/g, "[hex data]");
+      if (safe && !details.includes(safe)) details.push(safe);
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return details.length ? details.slice(0, 2).join(" / ").slice(0, 240) : null;
+}
+
 export function toWalletErrorMessage(error: unknown): string {
   const code = getErrorCode(error);
   const message = getErrorText(error).toLowerCase();
@@ -37,4 +55,12 @@ export function toWalletErrorMessage(error: unknown): string {
     return "Could not reach the Robinhood Chain RPC. Check your connection and try again.";
   }
   return "Wallet request failed. Please try again.";
+}
+
+export function toLaunchErrorMessage(error: unknown): string {
+  const message = toWalletErrorMessage(error);
+  const detail = getSafeWalletDetail(error);
+  if (!detail || message.toLowerCase().includes(detail.toLowerCase())) return message;
+  const code = getErrorCode(error);
+  return `${message} Wallet/RPC detail: ${detail}${code === undefined ? "" : ` (code ${code})`}.`;
 }

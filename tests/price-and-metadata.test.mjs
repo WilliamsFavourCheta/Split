@@ -15,7 +15,21 @@ const price = await loadPureModule("../app/lib/projects/price.ts");
 const metadata = await loadPureModule("../app/lib/projects/metadata-signing.ts");
 const image = await loadPureModule("../app/lib/projects/image-validation.ts");
 const drafts = await loadPureModule("../app/lib/projects/launch-draft.ts");
+const walletErrors = await loadPureModule("../app/web3/errors.ts");
 const Q96 = 2n ** 96n;
+
+test("launch errors retain the wallet failure reason without exposing RPC credentials", () => {
+  const cause = Object.assign(new Error("RPC rejected the request at https://rpc.example/private-token"), {
+    shortMessage: "RPC rejected the request at https://rpc.example/private-token",
+    code: -32603,
+  });
+  const error = Object.assign(new Error("Transaction preparation failed"), { cause });
+  const message = walletErrors.toLaunchErrorMessage(error);
+  assert.match(message, /Transaction preparation failed/);
+  assert.match(message, /RPC rejected the request/);
+  assert.match(message, /\[RPC endpoint\]/);
+  assert.doesNotMatch(message, /private-token/);
+});
 
 test("ETH per token inverts the native/token v4 price without zeroing extreme valid prices", () => {
   assert.equal(price.sqrtPriceX96ToEthPerToken(Q96.toString()), 1);
