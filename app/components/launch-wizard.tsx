@@ -59,7 +59,7 @@ async function prepareLogo(file: File) {
 export function LaunchWizard({ step }: { step: LaunchStep }) {
   const index = steps.findIndex((item) => item.key === step);
   const router = useRouter();
-  const { draft, draftHydrated } = useLaunchDraft();
+  const { draft, draftHydrated, updateDraft } = useLaunchDraft();
   const detailsValid = draft.name.trim().length >= 2 && new TextEncoder().encode(draft.name.trim()).length <= 64
     && /^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim());
   const marketValid = /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
@@ -78,11 +78,20 @@ export function LaunchWizard({ step }: { step: LaunchStep }) {
       router.replace(steps.find((item) => item.key === firstIncomplete)!.href);
     }
   }, [draftHydrated, firstIncomplete, redirectRequired, router]);
+  useEffect(() => {
+    if (draftHydrated && !redirectRequired && index > steps.findIndex((item) => item.key === draft.resumeStep)) {
+      updateDraft({ resumeStep: step });
+    }
+  }, [draftHydrated, redirectRequired, index, draft.resumeStep, step, updateDraft]);
+  const resumeIndex = Math.max(1, Math.min(
+    steps.findIndex((item) => item.key === draft.resumeStep),
+    firstIncomplete ? steps.findIndex((item) => item.key === firstIncomplete) : steps.length - 1,
+  ));
   if (!draftHydrated || redirectRequired) return <AppShell footer={false}><div className="section-shell page-body" role="status">Restoring launch draft...</div></AppShell>;
-  return <AppShell footer={false}><div className="section-shell page-body launch-page"><div className="launch-kicker"><div><span className="eyebrow">Launch protocol / New token</span><h1>Configure your launch</h1></div><span className="saved-state"><Icon name="lock" />Saved locally</span></div><nav className="launch-stepper" aria-label="Launch steps">{steps.map((item, itemIndex) => <Link href={item.href} className={`${itemIndex === index ? "active" : ""} ${itemIndex < index ? "complete" : ""}`} key={item.key}><span>{itemIndex < index ? <Icon name="check" /> : item.number}</span><strong>0{item.number} {item.label}</strong></Link>)}</nav>{step === "details" ? <DetailsStep /> : step === "market" ? <MarketStep /> : step === "split" ? <SplitStep /> : <OnchainLaunchReview />}</div></AppShell>;
+  return <AppShell footer={false}><div className="section-shell page-body launch-page"><div className="launch-kicker"><div><span className="eyebrow">Launch protocol / New token</span><h1>Configure your launch</h1></div><span className="saved-state"><Icon name="lock" />Saved locally</span></div><nav className="launch-stepper" aria-label="Launch steps">{steps.map((item, itemIndex) => <Link href={item.href} className={`${itemIndex === index ? "active" : ""} ${itemIndex < index ? "complete" : ""}`} key={item.key}><span>{itemIndex < index ? <Icon name="check" /> : item.number}</span><strong>0{item.number} {item.label}</strong></Link>)}</nav>{step === "details" ? <DetailsStep resumeHref={steps[resumeIndex].href} /> : step === "market" ? <MarketStep /> : step === "split" ? <SplitStep /> : <OnchainLaunchReview />}</div></AppShell>;
 }
 
-function DetailsStep() {
+function DetailsStep({ resumeHref }: { resumeHref: string }) {
   const { draft, updateDraft } = useLaunchDraft();
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -91,6 +100,7 @@ function DetailsStep() {
   const [dragging, setDragging] = useState(false);
   const valid = draft.name.trim().length >= 2 && new TextEncoder().encode(draft.name.trim()).length <= 64 && /^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim());
   const continueFlow = () => { setTouched(true); if (valid) router.push("/launch/market"); };
+  const resumeFlow = () => { setTouched(true); if (valid) router.push(resumeHref); };
   const handleLogo = async (file?: File) => {
     if (!file) return;
     setLogoError("");
@@ -134,7 +144,7 @@ function DetailsStep() {
         {touched && !valid ? <p className="form-error">Enter a token name and a 2-8 character symbol.</p> : null}
         <button className="button button-primary form-continue" onClick={continueFlow}>Continue <Icon name="arrow" /></button>
       </section>
-      <TokenPreview />
+      <TokenPreview onContinue={resumeFlow} />
     </div>
   );
 }
@@ -164,9 +174,9 @@ function SplitStep() {
   return <div className="split-builder-layout"><section className="launch-form-card glass-panel split-controls"><span className="eyebrow">Step 03 / Split</span><h2>Route every<br /><span>fee.</span></h2><p>Configure how the remaining 90% of SPLIT&apos;s collected swap fee is allocated. These project shares must total 100%; Protocol Revenue is separate and fixed at 10%.</p>{allocations.map((item) => <div className="allocation-control" key={item.key}><div><span><i style={{ background: item.color }} />{item.label}</span><label><input type="number" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} aria-label={`${item.label} percentage`} />%</label></div><input type="range" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} style={{ "--range-progress": `${item.value}%`, "--range-color": item.color } as React.CSSProperties} /></div>)}<label className="field-full">Project Treasury destination{draft.allocations.projectTreasury > 0 ? "*" : " (optional at 0%)"}<input value={draft.projectTreasuryAddress} onChange={(e) => updateDraft({ projectTreasuryAddress: e.target.value.trim() })} placeholder="0x..." aria-invalid={draft.projectTreasuryAddress.length > 0 && !projectTreasuryValid} /></label><label className="field-full">Community destination*<input value={draft.communityAddress} onChange={(e) => updateDraft({ communityAddress: e.target.value.trim() })} placeholder="0x..." aria-invalid={draft.communityAddress.length > 0 && !communityValid} /></label><small>The creator is your connected wallet. Project Treasury is configurable and independent of the global SPLIT Protocol Treasury. Liquidity is permanently reserved in the SPLIT vault.</small><div className={`allocation-total ${total === 100 ? "valid" : "invalid"}`}><span>Project allocation total</span><strong>{total}%</strong><small>{total === 100 ? "Ready to continue" : total < 100 ? `${100 - total}% remains unallocated` : `${total - 100}% over allocation`}</small></div><div className="wizard-actions"><Link className="button button-outline" href="/launch/market"><Icon name="back" />Back</Link><button className="button button-primary" disabled={total !== 100 || !wholePercentages || !communityValid || !projectTreasuryValid} onClick={() => router.push("/launch/review")}>Continue <Icon name="arrow" /></button></div></section><section className="split-visual glass-panel"><span className="eyebrow">Live routing model</span><RouteCore allocations={allocations} /><SplitStrip allocations={allocations} /><p>Of each 1% SPLIT swap fee, 10% is protocol revenue. The remaining 90% follows this project split. Project allocation must equal exactly 100%.</p></section></div>;
 }
 
-function TokenPreview() {
+function TokenPreview({ onContinue }: { onContinue: () => void }) {
   const { draft } = useLaunchDraft();
-  return <aside className="launch-preview glass-panel"><div className="form-section-head"><span className="eyebrow">Live token preview</span><span className="draft-badge"><span className="status-dot" />Draft</span></div><div className="preview-card"><div className="preview-token-head"><span className="preview-token-glyph">{draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={50} height={50} unoptimized alt="" /> : draft.symbol[0] || "T"}</span><div><strong>{draft.name || "Your Token"}</strong><span>${draft.symbol || "TKN"}</span></div><span className="status-badge status-upcoming">Upcoming</span></div><dl><div><dt>Mcap</dt><dd>-</dd></div><div><dt>Vol (24h)</dt><dd>-</dd></div><div><dt>Liq</dt><dd>-</dd></div></dl><span className="eyebrow">SPLIT swap fee <b>1% / 10% protocol share</b></span><small>Launch fee: 0.0005 ETH, separate from initial liquidity.</small><SplitStrip allocations={DEFAULT_SPLIT.map((item) => ({ ...item, value: draft.allocations[item.key] }))} /><div className="preview-actions"><Link href="/explore">Explore launches <Icon name="external" size={13} /></Link><button type="button" className="preview-trade" disabled title="Trading becomes available after deployment">Trade</button></div></div><p>This is how your token will appear across the launchpad.</p></aside>;
+  return <aside className="launch-preview glass-panel"><div className="form-section-head"><span className="eyebrow">Live token preview</span><span className="draft-badge"><span className="status-dot" />Draft</span></div><div className="preview-card"><div className="preview-token-head"><span className="preview-token-glyph">{draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={50} height={50} unoptimized alt="" /> : draft.symbol[0] || "T"}</span><div><strong>{draft.name || "Your Token"}</strong><span>${draft.symbol || "TKN"}</span></div><span className="status-badge status-upcoming">Upcoming</span></div><dl><div><dt>Mcap</dt><dd>-</dd></div><div><dt>Vol (24h)</dt><dd>-</dd></div><div><dt>Liq</dt><dd>-</dd></div></dl><span className="eyebrow">SPLIT swap fee <b>1% / 10% protocol share</b></span><small>Launch fee: 0.0005 ETH, separate from initial liquidity.</small><SplitStrip allocations={DEFAULT_SPLIT.map((item) => ({ ...item, value: draft.allocations[item.key] }))} /><div className="preview-actions"><button type="button" className="preview-continue" onClick={onContinue}>Continue draft <Icon name="arrow" size={13} /></button><button type="button" className="preview-trade" disabled title="Trading becomes available after deployment">Trade</button></div></div><p>This is how your token will appear across the launchpad.</p></aside>;
 }
 
 function MarketPreview() {

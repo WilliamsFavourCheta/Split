@@ -1,4 +1,5 @@
 export type LaunchDraft = {
+  resumeStep: "details" | "market" | "split" | "review";
   name: string;
   symbol: string;
   description: string;
@@ -19,6 +20,7 @@ export type LaunchDraft = {
 };
 
 export const DEFAULT_DRAFT: LaunchDraft = {
+  resumeStep: "details",
   name: "", symbol: "", description: "", website: "", twitter: "", telegram: "", discord: "",
   logoName: "", logoDataUrl: "", supply: "1000000000", initialLiquidity: "5", tokenSeedAmount: "1000000",
   feeRate: "1", quoteAsset: "ETH", projectTreasuryAddress: "", communityAddress: "",
@@ -38,6 +40,7 @@ export function restoreLaunchDraft(serialized: string): LaunchDraft {
     && /^data:image\/(?:webp|png|jpeg);base64,/i.test(parsed.logoDataUrl)
     ? parsed.logoDataUrl : "";
   return {
+    resumeStep: parsed.resumeStep === "market" || parsed.resumeStep === "split" || parsed.resumeStep === "review" ? parsed.resumeStep : "details",
     name: stringValue("name"), symbol: stringValue("symbol"), description: stringValue("description"),
     website: stringValue("website"), twitter: stringValue("twitter"), telegram: stringValue("telegram"),
     discord: stringValue("discord"), logoName: logoDataUrl ? stringValue("logoName") : "", logoDataUrl,

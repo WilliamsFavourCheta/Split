@@ -80,11 +80,14 @@ test("launch draft restoration preserves legacy treasury allocation and safe loc
     allocations: { creator: 40, liquidity: 30, treasury: 20, community: 10 },
   }));
   assert.equal(restored.allocations.projectTreasury, 20);
+  assert.equal(restored.resumeStep, "details");
   assert.equal(restored.logoName, "logo.webp");
   assert.equal(restored.logoDataUrl, "data:image/webp;base64,AAAA");
   const malformed = drafts.restoreLaunchDraft(JSON.stringify({ logoName: "bad.svg", logoDataUrl: "data:image/svg+xml;base64,AAAA", allocations: { treasury: 1000 } }));
   assert.equal(malformed.logoDataUrl, "");
   assert.equal(malformed.logoName, "");
   assert.equal(malformed.allocations.projectTreasury, 20);
+  assert.equal(drafts.restoreLaunchDraft(JSON.stringify({ resumeStep: "review" })).resumeStep, "review");
+  assert.equal(drafts.restoreLaunchDraft(JSON.stringify({ resumeStep: "/explore" })).resumeStep, "details");
   assert.equal(drafts.restoreLaunchDraft("not-json").name, "");
 });
