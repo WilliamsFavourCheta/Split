@@ -19,8 +19,28 @@ import { getTransactionExplorerUrl } from "../web3/explorer";
 import { toLaunchErrorMessage } from "../web3/errors";
 import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 import { validateTokenIdentity } from "../lib/projects/token-identity";
+import type { LaunchDraft } from "../lib/projects/launch-draft";
 
 type TxState = "idle" | "awaiting-signature" | "pending" | "indexing" | "error";
+const LAUNCH_FEE = parseEther("0.0005");
+const LARGE_LIQUIDITY = parseEther("0.1");
+
+function launchArguments(draft: LaunchDraft) {
+  const identity = validateTokenIdentity(draft.name, draft.symbol);
+  return [{
+    name: identity.name,
+    symbol: identity.symbol,
+    tokenSeedAmount: parseEther(draft.tokenSeedAmount),
+    seedQuoteAmount: parseEther(draft.initialLiquidity),
+    creatorBps: BigInt(draft.allocations.creator * 100),
+    liquidityBps: BigInt(draft.allocations.liquidity * 100),
+    projectTreasuryBps: BigInt(draft.allocations.projectTreasury * 100),
+    communityBps: BigInt(draft.allocations.community * 100),
+    projectTreasury: draft.allocations.projectTreasury > 0 ? draft.projectTreasuryAddress as `0x${string}` : "0x0000000000000000000000000000000000000000",
+    community: draft.communityAddress as `0x${string}`,
+    salt: zeroHash,
+  }] as const;
+}
 
 export function OnchainLaunchReview() {
   const { draft } = useLaunchDraft();
@@ -34,12 +54,43 @@ export function OnchainLaunchReview() {
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const [txNotice, setTxNotice] = useState<string | null>(null);
+  const [largeAmountConfirmation, setLargeAmountConfirmation] = useState("");
+  const [gasEstimate, setGasEstimate] = useState<{ key: string; eth: string } | null>(null);
   const allocations: Allocation[] = DEFAULT_SPLIT.map((item) => ({ ...item, value: draft.allocations[item.key] }));
   let totalEthRequired = "Unavailable";
-  try { totalEthRequired = formatEther(parseEther(draft.initialLiquidity) + parseEther("0.0005")); } catch { /* incomplete draft */ }
+  let largeLiquidity = false;
+  try {
+    if (draft.initialLiquidityExplicit) {
+      const liquidity = parseEther(draft.initialLiquidity);
+      totalEthRequired = formatEther(liquidity + LAUNCH_FEE);
+      largeLiquidity = liquidity >= LARGE_LIQUIDITY;
+    }
+  } catch { /* incomplete draft */ }
   const factoryAddress = getSplitFactoryAddress(wallet.chainId ?? targetChainId);
+  const estimateKey = JSON.stringify([draft.name, draft.symbol, draft.initialLiquidity, draft.tokenSeedAmount, draft.allocations, draft.projectTreasuryAddress, draft.communityAddress, wallet.address, factoryAddress]);
+  const estimatedGasEth = gasEstimate?.key === estimateKey ? gasEstimate.eth : null;
   const busy = txState === "awaiting-signature" || txState === "pending" || txState === "indexing"
     || wallet.status === "connecting" || wallet.status === "restoring" || wallet.status === "switching" || wallet.status === "disconnecting";
+
+  useEffect(() => {
+    if (!publicClient || !factoryAddress || !wallet.address || wallet.chainId !== 4663 || !draft.initialLiquidityExplicit) return;
+    if (!validateTokenIdentity(draft.name, draft.symbol).valid || !isAddress(draft.communityAddress)
+      || (draft.allocations.projectTreasury > 0 && !isAddress(draft.projectTreasuryAddress))) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const value = parseEther(draft.initialLiquidity) + LAUNCH_FEE;
+        const [gas, gasPrice] = await Promise.all([
+          publicClient.estimateContractGas({ address: factoryAddress, abi: splitFactoryAbi, functionName: "launch", args: launchArguments(draft), value, account: wallet.address! }),
+          publicClient.getGasPrice(),
+        ]);
+        if (!cancelled) setGasEstimate({ key: estimateKey, eth: formatEther(gas * gasPrice) });
+      } catch {
+        if (!cancelled) setGasEstimate({ key: estimateKey, eth: "Unavailable; wallet will show final network gas" });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [draft, estimateKey, factoryAddress, publicClient, wallet.address, wallet.chainId]);
 
   const deploy = async () => {
     setTxError(null);
@@ -87,10 +138,10 @@ export function OnchainLaunchReview() {
 
     let quoteAmount: bigint;
     let tokenSeedAmount: bigint;
-    const launchFee = parseEther("0.0005");
     const identity = validateTokenIdentity(draft.name, draft.symbol);
     try {
       if (!identity.valid) throw new Error(`${identity.nameError || identity.symbolError} No transaction was sent.`);
+      if (!draft.initialLiquidityExplicit) throw new Error("Enter the initial ETH liquidity amount yourself before launching. No transaction was sent.");
       quoteAmount = parseEther(draft.initialLiquidity);
       tokenSeedAmount = parseEther(draft.tokenSeedAmount);
       if (quoteAmount <= BigInt(0) || tokenSeedAmount <= BigInt(0) || tokenSeedAmount > BigInt(1_000_000_000) * BigInt(10) ** BigInt(18)) throw new Error("Enter positive seed amounts, with no more than 1 billion seed tokens. No transaction was sent.");
@@ -99,6 +150,7 @@ export function OnchainLaunchReview() {
       if (draft.quoteAsset !== "ETH") throw new Error("Only ETH is supported as the quote asset. No transaction was sent.");
       if (draft.allocations.projectTreasury > 0 && !isAddress(draft.projectTreasuryAddress)) throw new Error("Enter a valid project treasury address. No transaction was sent.");
       if (!isAddress(draft.communityAddress)) throw new Error("Enter a valid community address. No transaction was sent.");
+      if (quoteAmount >= LARGE_LIQUIDITY && largeAmountConfirmation.trim() !== draft.initialLiquidity) throw new Error(`For this large launch, type ${draft.initialLiquidity} in the confirmation field. No transaction was sent.`);
     } catch (error) {
       setTxError(error instanceof Error ? error.message : "Check the launch fields before trying again. No transaction was sent.");
       setTxState("error");
@@ -122,20 +174,8 @@ export function OnchainLaunchReview() {
         address: factoryAddress,
         abi: splitFactoryAbi,
         functionName: "launch",
-        args: [{
-          name: identity.name,
-          symbol: identity.symbol,
-          tokenSeedAmount,
-          seedQuoteAmount: quoteAmount,
-          creatorBps: BigInt(draft.allocations.creator * 100),
-          liquidityBps: BigInt(draft.allocations.liquidity * 100),
-          projectTreasuryBps: BigInt(draft.allocations.projectTreasury * 100),
-          communityBps: BigInt(draft.allocations.community * 100),
-          projectTreasury: draft.allocations.projectTreasury > 0 ? draft.projectTreasuryAddress as `0x${string}` : "0x0000000000000000000000000000000000000000",
-          community: draft.communityAddress as `0x${string}`,
-          salt: zeroHash,
-        }],
-        value: quoteAmount + launchFee,
+        args: launchArguments(draft),
+        value: quoteAmount + LAUNCH_FEE,
         account: wallet.address,
       });
       setTxHash(submittedHash);
@@ -208,7 +248,14 @@ export function OnchainLaunchReview() {
       <span className="eyebrow">Step 04 / Review</span><h2 className="review-title">Review your<br /><span>launch.</span></h2>
       <p className="review-lede">A confirmed factory transaction creates the token, pool, vault-owned seed position, and immutable split in one atomic call.</p>
       <ReviewSection title="Token" editHref="/launch/details"><dl><div><dt>Name</dt><dd>{draft.name || "Not provided"}</dd></div><div><dt>Symbol</dt><dd>${draft.symbol || "-"}</dd></div><div><dt>Description</dt><dd>{draft.description || "No description"}</dd></div></dl></ReviewSection>
-      <ReviewSection title="Market" editHref="/launch/market"><dl><div><dt>Fixed launch fee</dt><dd>0.0005 ETH (Protocol Treasury)</dd></div><div><dt>Initial quote liquidity</dt><dd>{draft.initialLiquidity} ETH (project seed)</dd></div><div><dt>Initial token liquidity</dt><dd>{draft.tokenSeedAmount} ${draft.symbol || "TOKEN"}</dd></div><div><dt>Total ETH required</dt><dd>{totalEthRequired} ETH + network gas</dd></div><div><dt>SPLIT trading fee</dt><dd>1% on official registered-pool swaps · 10% of collected fee to Protocol Treasury · 90% programmable</dd></div><div><dt>Pool LP fee</dt><dd>0.30%</dd></div></dl></ReviewSection>
+      <ReviewSection title="Market" editHref="/launch/market"><dl>
+        <div><dt>Initial ETH liquidity</dt><dd>{draft.initialLiquidityExplicit ? `${draft.initialLiquidity} ETH` : "Enter an amount"} (locked seed)</dd></div>
+        <div><dt>Initial token liquidity</dt><dd>{draft.tokenSeedAmount} ${draft.symbol || "TOKEN"}</dd></div>
+        <div><dt>Fixed SPLIT launch fee</dt><dd>0.0005 ETH (Protocol Treasury)</dd></div>
+        <div><dt>Estimated network gas</dt><dd>{estimatedGasEth ? `${estimatedGasEth}${estimatedGasEth.startsWith("Unavailable") ? "" : " ETH"}` : "Calculating when wallet connects; wallet shows final gas"}</dd></div>
+        <div className="review-total"><dt>TOTAL ETH TO SEND</dt><dd>{totalEthRequired === "Unavailable" ? totalEthRequired : `${totalEthRequired} ETH`}</dd></div>
+        <div><dt>SPLIT trading fee</dt><dd>1% on official registered-pool swaps · 10% protocol · 90% programmable</dd></div><div><dt>Pool LP fee</dt><dd>0.30%</dd></div>
+      </dl><p className="gas-disclaimer">Network gas is paid separately on top of the transaction value. The wallet displays its final gas estimate before signing.</p></ReviewSection>
       <ReviewSection title="Project fee split (100% of programmable 90%)" editHref="/launch/split"><SplitStrip allocations={allocations} /><div className="review-split">{allocations.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}<strong>{item.value}%</strong></span>)}</div><p>Protocol Treasury receives a separate, non-configurable 10% of every collected SPLIT swap fee. The four percentages below divide only the remaining 90%.</p><p>Creator recipient: <code>{wallet.address || "Connect wallet"}</code></p><p>Liquidity allocation: <strong>{draft.allocations.liquidity}%</strong> to the SPLIT LiquidityVault; the seeded LP position is vault-controlled.</p><p>Project Treasury recipient: <code>{draft.allocations.projectTreasury === 0 ? "Not allocated (0%)" : draft.projectTreasuryAddress || "Not set"}</code></p><p>Community recipient: <code>{draft.communityAddress || "Not set"}</code></p></ReviewSection>
     </section>
     <aside className="deploy-card glass-panel">
@@ -216,7 +263,9 @@ export function OnchainLaunchReview() {
       <h3>{!productionLaunchEnabled ? "Visual review only" : txState === "indexing" ? "Launch confirmed" : wallet.status === "connected" ? "Ready to deploy" : "Connect your wallet"}</h3>
       <p>{!productionLaunchEnabled ? "Contracts have not completed release approval or production deployment. You can review the launch flow, but no transaction can be submitted." : txState === "indexing" ? "The Robinhood Chain transaction is confirmed. We're waiting for the indexer to publish your project." : "Review the fee destinations and seed amounts. SPLIT fees accrue on swaps and are routed separately."}</p>
       <div className="deploy-cost"><span>Target network</span><strong>{wallet.targetChainName}</strong><span>Factory</span><strong>{factoryAddress ? `${factoryAddress.slice(0, 8)}...${factoryAddress.slice(-6)}` : "Not configured"}</strong><span>Fee configuration</span><strong>{factoryAddress ? "Onchain / immutable" : "Awaiting verified deployment"}</strong></div>
-      <button className="button button-primary deploy-button" disabled={!productionLaunchEnabled || busy || (!factoryAddress && wallet.status === "connected")} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled ? "lock" : wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
+      <div className="launch-send-amount"><span>Exact wallet transaction value</span><strong>{totalEthRequired === "Unavailable" ? totalEthRequired : `${totalEthRequired} ETH`}</strong><small>{draft.initialLiquidityExplicit ? `${draft.initialLiquidity} ETH initial liquidity + 0.0005 ETH fixed launch fee. Network gas is separate.` : "Enter initial ETH liquidity on the Market step."}</small></div>
+      {largeLiquidity ? <div className="high-liquidity-warning"><strong>Large initial liquidity: {draft.initialLiquidity} ETH</strong><p>The wallet will request {totalEthRequired} ETH plus gas. Type the exact liquidity amount below to confirm before deploying.</p><label>Confirm initial liquidity amount<input type="text" inputMode="decimal" value={largeAmountConfirmation} onChange={(event) => setLargeAmountConfirmation(event.target.value)} placeholder={`Type ${draft.initialLiquidity}`} autoComplete="off" /></label></div> : null}
+      <button className="button button-primary deploy-button" disabled={!productionLaunchEnabled || busy || (!factoryAddress && wallet.status === "connected") || (wallet.status === "connected" && largeLiquidity && largeAmountConfirmation.trim() !== draft.initialLiquidity)} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled ? "lock" : wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
       {txHash && transactionUrl ? <a className="deploy-disclaimer" href={transactionUrl} target="_blank" rel="noreferrer">View transaction {txHash.slice(0, 10)}...</a> : null}
       {txNotice ? <p className="deploy-disclaimer" role="status">{txNotice}</p> : null}
       {txError ? <p className="form-error" role="alert">{txError}</p> : null}

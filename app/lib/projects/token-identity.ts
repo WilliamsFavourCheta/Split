@@ -1,5 +1,6 @@
 export const MAX_TOKEN_NAME_CHARACTERS = 50;
-export const MAX_TOKEN_SYMBOL_CHARACTERS = 10;
+export const MIN_TOKEN_SYMBOL_CHARACTERS = 2;
+export const MAX_TOKEN_SYMBOL_CHARACTERS = 8;
 const MAX_ONCHAIN_NAME_BYTES = 64;
 
 export function normalizeTokenName(value: string) {
@@ -22,8 +23,8 @@ export function validateTokenIdentity(rawName: string, rawSymbol: string) {
       : new TextEncoder().encode(name).length > MAX_ONCHAIN_NAME_BYTES
         ? "Token name exceeds the contract's 64-byte UTF-8 limit. Shorten it."
         : null;
-  const symbolError = symbolCharacters === 0
-    ? "Enter a token symbol."
+  const symbolError = symbolCharacters < MIN_TOKEN_SYMBOL_CHARACTERS
+    ? `Token symbol must be at least ${MIN_TOKEN_SYMBOL_CHARACTERS} characters.`
     : symbolCharacters > MAX_TOKEN_SYMBOL_CHARACTERS
       ? `Token symbol must be ${MAX_TOKEN_SYMBOL_CHARACTERS} characters or fewer.`
       : !/^[A-Z0-9]+$/.test(symbol)

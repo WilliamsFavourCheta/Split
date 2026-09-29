@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
 import { DEFAULT_SPLIT } from "../data/mock";
 import { MAX_TOKEN_NAME_CHARACTERS, MAX_TOKEN_SYMBOL_CHARACTERS, normalizeTokenName, normalizeTokenSymbol, validateTokenIdentity } from "../lib/projects/token-identity";
+import { MAX_IMAGE_BYTES, mimeExtensions } from "../lib/projects/image-validation";
 import { Icon } from "./icons";
 import { useLaunchDraft } from "./providers";
 import { AppShell } from "./shell";
@@ -29,9 +30,8 @@ const steps: { key: LaunchStep; number: number; label: string; href: string }[] 
 ];
 
 async function prepareLogo(file: File) {
-  const allowedTypes = ["image/png", "image/jpeg", "image/webp"];
-  if (!allowedTypes.includes(file.type)) throw new Error("Choose a PNG, JPG, or WebP image.");
-  if (file.size > 5 * 1024 * 1024) throw new Error("The image must be 5 MB or smaller.");
+  if (!mimeExtensions[file.type]) throw new Error("Choose a PNG, JPG, or WebP image.");
+  if (file.size > MAX_IMAGE_BYTES) throw new Error("The image must be 512 KiB or smaller.");
   const bitmap = await createImageBitmap(file);
   const scale = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
   const canvas = document.createElement("canvas");
@@ -45,9 +45,9 @@ async function prepareLogo(file: File) {
   let blob: Blob | null = null;
   for (const quality of [0.84, 0.72, 0.6]) {
     blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", quality));
-    if (blob && blob.size <= 512 * 1024) break;
+    if (blob && blob.size <= MAX_IMAGE_BYTES) break;
   }
-  if (!blob || blob.size > 512 * 1024) throw new Error("This image could not be compressed small enough. Try a simpler or smaller image.");
+  if (!blob || blob.size > MAX_IMAGE_BYTES) throw new Error("This image could not be compressed small enough. Try a simpler or smaller image.");
   const dataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error("The image could not be read."));
@@ -62,7 +62,7 @@ export function LaunchWizard({ step }: { step: LaunchStep }) {
   const router = useRouter();
   const { draft, draftHydrated, updateDraft } = useLaunchDraft();
   const detailsValid = validateTokenIdentity(draft.name, draft.symbol).valid;
-  const marketValid = /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
+  const marketValid = draft.initialLiquidityExplicit && /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
     && /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.tokenSeedAmount)
     && (() => { try { return parseEther(draft.tokenSeedAmount) <= parseEther("1000000000"); } catch { return false; } })()
     && draft.quoteAsset === "ETH";
@@ -140,7 +140,7 @@ function DetailsStep({ resumeHref }: { resumeHref: string }) {
               <Icon name="upload" />
               {draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={68} height={68} unoptimized alt="Token logo preview" /> : null}
               <span>{draft.logoName || <>Drop an image here or <b>browse</b></>}</span>
-              <small>PNG, JPG or WebP - up to 5 MB. Saved as a compact local draft preview.</small>
+              <small>PNG, JPG or WebP - up to 512 KiB. Saved as a compact local draft preview.</small>
             </button>
             {draft.logoDataUrl ? <button type="button" className="text-button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); updateDraft({ logoName: "", logoDataUrl: "" }); }}>Remove image</button> : null}
             {logoError ? <small className="form-error" role="alert">{logoError}</small> : null}
@@ -165,14 +165,30 @@ function MarketStep() {
   const { draft, updateDraft } = useLaunchDraft();
   const router = useRouter();
   const [touched, setTouched] = useState(false);
-  const valid = /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
+  const valid = draft.initialLiquidityExplicit && /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
     && /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.tokenSeedAmount)
     && (() => { try { return parseEther(draft.tokenSeedAmount) <= parseEther("1000000000"); } catch { return false; } })()
     && draft.quoteAsset === "ETH";
   const continueFlow = () => { setTouched(true); if (valid) router.push("/launch/split"); };
-  let totalEth = "0.000500";
-  try { totalEth = formatEther(parseEther(draft.initialLiquidity || "0") + parseEther("0.0005")); } catch { /* Invalid drafts are explained below. */ }
-  return <div className="launch-content-grid"><section className="launch-form-card glass-panel"><span className="eyebrow">Step 02 / Market</span><h2>Shape the<br /><span>market.</span></h2><p>Set token supply and initial pool liquidity. The protocol launch fee is separate from your seed.</p><div className="form-grid market-form"><label>Fixed token supply<input value="1,000,000,000" readOnly aria-readonly="true" /></label><label>Quote asset<select value={draft.quoteAsset} onChange={(e) => updateDraft({ quoteAsset: e.target.value })}><option>ETH</option><option disabled>USDC - unavailable</option></select></label><label>Initial ETH liquidity*<input type="number" min="0.000000000000000001" step="any" value={draft.initialLiquidity} onChange={(e) => updateDraft({ initialLiquidity: e.target.value })} /></label><label>Token amount for liquidity*<input type="number" min="0.000000000000000001" step="any" value={draft.tokenSeedAmount} onChange={(e) => updateDraft({ tokenSeedAmount: e.target.value })} /></label></div><div className="launch-cost-summary"><div><span>Launch fee</span><strong>0.0005 ETH</strong><small>Paid to SPLIT Protocol Treasury</small></div><div><span>Initial liquidity</span><strong>{draft.initialLiquidity || "0"} ETH + {draft.tokenSeedAmount || "0"} tokens</strong><small>Seeded separately through the Liquidity Vault</small></div></div><div className="info-callout"><Icon name="lock" /><div><strong>1% on official registered-pool swaps</strong><p>Other pools and venues are outside SPLIT fee accounting. Of each fee collected by the official SPLIT pool hook, 10% is Protocol Revenue and the remaining 90% follows your configurable 100% project split. The pool also charges its separate 0.30% LP fee.</p></div></div><div className="launch-cost-summary"><div><span>Total ETH required</span><strong>{totalEth} ETH</strong><small>Launch fee + ETH liquidity; excludes gas</small></div></div>{touched && !valid ? <p className="form-error">Enter positive seed amounts with up to 18 decimals; token seed cannot exceed 1 billion.</p> : null}<div className="wizard-actions"><Link className="button button-outline" href="/launch/details"><Icon name="back" />Back</Link><button className="button button-primary" onClick={continueFlow}>Continue <Icon name="arrow" /></button></div></section><MarketPreview /></div>;
+  let totalEth: string | null = null;
+  if (draft.initialLiquidityExplicit) {
+    try { totalEth = formatEther(parseEther(draft.initialLiquidity) + parseEther("0.0005")); } catch { /* Invalid drafts are explained below. */ }
+  }
+  return <div className="launch-content-grid"><section className="launch-form-card glass-panel">
+    <span className="eyebrow">Step 02 / Market</span><h2>Shape the<br /><span>market.</span></h2>
+    <p>Set token supply and initial pool liquidity. Enter the ETH amount you intend to lock; no amount is preselected.</p>
+    <div className="form-grid market-form">
+      <label>Fixed token supply<input value="1,000,000,000" readOnly aria-readonly="true" /></label>
+      <label>Quote asset<select value={draft.quoteAsset} onChange={(e) => updateDraft({ quoteAsset: e.target.value })}><option>ETH</option><option disabled>USDC - unavailable</option></select></label>
+      <label>Initial ETH liquidity*<input type="number" min="0.000000000000000001" step="any" placeholder="e.g. 0.002" value={draft.initialLiquidity} onChange={(e) => updateDraft({ initialLiquidity: e.target.value, initialLiquidityExplicit: true })} /></label>
+      <label>Token amount for liquidity*<input type="number" min="0.000000000000000001" step="any" value={draft.tokenSeedAmount} onChange={(e) => updateDraft({ tokenSeedAmount: e.target.value })} /></label>
+    </div>
+    <div className="launch-cost-summary"><div><span>Initial ETH liquidity</span><strong>{draft.initialLiquidity || "Enter an amount"}{draft.initialLiquidity ? " ETH" : ""}</strong><small>Seeded through SplitVault with {draft.tokenSeedAmount || "0"} tokens</small></div><div><span>Fixed SPLIT launch fee</span><strong>0.0005 ETH</strong><small>Paid to SPLIT Protocol Treasury</small></div></div>
+    <div className="info-callout"><Icon name="lock" /><div><strong>1% on official registered-pool swaps</strong><p>Other pools and venues are outside SPLIT fee accounting. Of each fee collected by the official SPLIT pool hook, 10% is Protocol Revenue and the remaining 90% follows your configurable 100% project split. The pool also charges its separate 0.30% LP fee.</p></div></div>
+    <div className="launch-cost-summary"><div><span>Total ETH to send</span><strong>{totalEth === null ? "Enter a valid liquidity amount" : `${totalEth} ETH`}</strong><small>Initial liquidity + 0.0005 ETH launch fee; network gas is separate</small></div></div>
+    {touched && !valid ? <p className="form-error">Enter both positive seed amounts with up to 18 decimals; token seed cannot exceed 1 billion.</p> : null}
+    <div className="wizard-actions"><Link className="button button-outline" href="/launch/details"><Icon name="back" />Back</Link><button className="button button-primary" onClick={continueFlow}>Continue <Icon name="arrow" /></button></div>
+  </section><MarketPreview /></div>;
 }
 
 function SplitStep() {

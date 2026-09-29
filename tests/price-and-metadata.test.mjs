@@ -37,15 +37,16 @@ test("launch identity uses the same strict normalized name and symbol limits at 
   assert.equal(valid.valid, true);
   assert.equal(valid.name, "Orbit");
   assert.equal(valid.symbol, "ORB9");
-  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z").valid, true);
-  assert.equal(tokenIdentity.validateTokenIdentity("A".repeat(50), "Z".repeat(10)).valid, true);
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "ZZ").valid, true);
+  assert.equal(tokenIdentity.validateTokenIdentity("A".repeat(50), "Z".repeat(8)).valid, true);
   assert.equal(tokenIdentity.validateTokenIdentity("", "Z").valid, false);
   assert.equal(tokenIdentity.validateTokenIdentity("A".repeat(51), "Z").valid, false);
   assert.match(tokenIdentity.validateTokenIdentity("é".repeat(40), "Z").nameError, /64-byte/);
   assert.equal(tokenIdentity.validateTokenIdentity("A", "").valid, false);
-  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z".repeat(11)).valid, false);
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z").valid, false);
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z".repeat(9)).valid, false);
   assert.match(tokenIdentity.validateTokenIdentity("A", "AB-C").symbolError, /A–Z/);
-  assert.match(tokenIdentity.validateTokenIdentity("A", "ß").symbolError, /A–Z/);
+  assert.match(tokenIdentity.validateTokenIdentity("A", "Aß").symbolError, /A–Z/);
 });
 
 test("ETH per token inverts the native/token v4 price without zeroing extreme valid prices", () => {
@@ -107,4 +108,15 @@ test("launch draft restoration preserves legacy treasury allocation and safe loc
   assert.equal(drafts.restoreLaunchDraft(JSON.stringify({ resumeStep: "review" })).resumeStep, "review");
   assert.equal(drafts.restoreLaunchDraft(JSON.stringify({ resumeStep: "/explore" })).resumeStep, "details");
   assert.equal(drafts.restoreLaunchDraft("not-json").name, "");
+});
+
+test("launch draft requires a fresh explicit ETH amount instead of restoring an old 5 ETH default", () => {
+  assert.equal(drafts.DEFAULT_DRAFT.initialLiquidity, "");
+  assert.equal(drafts.DEFAULT_DRAFT.initialLiquidityExplicit, false);
+  const oldDraft = drafts.restoreLaunchDraft(JSON.stringify({ initialLiquidity: "5", resumeStep: "review" }));
+  assert.equal(oldDraft.initialLiquidity, "");
+  assert.equal(oldDraft.initialLiquidityExplicit, false);
+  const explicitDraft = drafts.restoreLaunchDraft(JSON.stringify({ initialLiquidity: "0.002", initialLiquidityExplicit: true }));
+  assert.equal(explicitDraft.initialLiquidity, "0.002");
+  assert.equal(explicitDraft.initialLiquidityExplicit, true);
 });
