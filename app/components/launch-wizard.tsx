@@ -171,7 +171,37 @@ function SplitStep() {
   const wholePercentages = Object.values(draft.allocations).every((value) => Number.isInteger(value) && value >= 0 && value <= 100);
   const communityValid = isAddress(draft.communityAddress);
   const projectTreasuryValid = draft.allocations.projectTreasury === 0 || isAddress(draft.projectTreasuryAddress);
-  return <div className="split-builder-layout"><section className="launch-form-card glass-panel split-controls"><span className="eyebrow">Step 03 / Split</span><h2>Route every<br /><span>fee.</span></h2><p>Configure how the remaining 90% of SPLIT&apos;s collected swap fee is allocated. These project shares must total 100%; Protocol Revenue is separate and fixed at 10%.</p>{allocations.map((item) => <div className="allocation-control" key={item.key}><div><span><i style={{ background: item.color }} />{item.label}</span><label><input type="number" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} aria-label={`${item.label} percentage`} />%</label></div><input type="range" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} style={{ "--range-progress": `${item.value}%`, "--range-color": item.color } as React.CSSProperties} /></div>)}<label className="field-full">Project Treasury destination{draft.allocations.projectTreasury > 0 ? "*" : " (optional at 0%)"}<input value={draft.projectTreasuryAddress} onChange={(e) => updateDraft({ projectTreasuryAddress: e.target.value.trim() })} placeholder="0x..." aria-invalid={draft.projectTreasuryAddress.length > 0 && !projectTreasuryValid} /></label><label className="field-full">Community destination*<input value={draft.communityAddress} onChange={(e) => updateDraft({ communityAddress: e.target.value.trim() })} placeholder="0x..." aria-invalid={draft.communityAddress.length > 0 && !communityValid} /></label><small>The creator is your connected wallet. Project Treasury is configurable and independent of the global SPLIT Protocol Treasury. Liquidity is permanently reserved in the SPLIT vault.</small><div className={`allocation-total ${total === 100 ? "valid" : "invalid"}`}><span>Project allocation total</span><strong>{total}%</strong><small>{total === 100 ? "Ready to continue" : total < 100 ? `${100 - total}% remains unallocated` : `${total - 100}% over allocation`}</small></div><div className="wizard-actions"><Link className="button button-outline" href="/launch/market"><Icon name="back" />Back</Link><button className="button button-primary" disabled={total !== 100 || !wholePercentages || !communityValid || !projectTreasuryValid} onClick={() => router.push("/launch/review")}>Continue <Icon name="arrow" /></button></div></section><section className="split-visual glass-panel"><span className="eyebrow">Live routing model</span><RouteCore allocations={allocations} /><SplitStrip allocations={allocations} /><p>Of each 1% SPLIT swap fee, 10% is protocol revenue. The remaining 90% follows this project split. Project allocation must equal exactly 100%.</p></section></div>;
+  return <div className="split-builder-layout">
+    <section className="launch-form-card glass-panel split-controls">
+      <span className="eyebrow">Step 03 / Split</span>
+      <h2>Route every<br /><span>fee.</span></h2>
+      <p>Configure how the remaining 90% of SPLIT&apos;s collected swap fee is allocated. These project shares must total 100%; Protocol Revenue is separate and fixed at 10%.</p>
+      {allocations.map((item) => <div className="allocation-control" key={item.key}>
+        <div><span><i style={{ background: item.color }} />{item.label}</span><label><input type="number" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} aria-label={`${item.label} percentage`} />%</label></div>
+        <input type="range" min="0" max="100" value={item.value} onChange={(e) => updateAllocation(item.key, Number(e.target.value))} style={{ "--range-progress": `${item.value}%`, "--range-color": item.color } as React.CSSProperties} />
+      </div>)}
+      <div className="split-destinations">
+        <div className="split-destinations-heading">
+          <span className="eyebrow">Fee destinations</span>
+          <p>Enter the wallets that will receive these project fee shares.</p>
+        </div>
+        <label className="split-destination-field">
+          <span>Project Treasury address{draft.allocations.projectTreasury > 0 ? " *" : " (optional)"}</span>
+          <input value={draft.projectTreasuryAddress} onChange={(e) => updateDraft({ projectTreasuryAddress: e.target.value.trim() })} placeholder="Paste a 0x wallet address" autoComplete="off" autoCapitalize="off" spellCheck={false} aria-invalid={draft.projectTreasuryAddress.length > 0 && !projectTreasuryValid} />
+          <small>{draft.allocations.projectTreasury > 0 ? `Required for its ${draft.allocations.projectTreasury}% project allocation.` : "Not required while its allocation is 0%."}</small>
+        </label>
+        <label className="split-destination-field">
+          <span>Community address *</span>
+          <input value={draft.communityAddress} onChange={(e) => updateDraft({ communityAddress: e.target.value.trim() })} placeholder="Paste a 0x wallet address" autoComplete="off" autoCapitalize="off" spellCheck={false} aria-invalid={draft.communityAddress.length > 0 && !communityValid} />
+          <small>Required for its {draft.allocations.community}% project allocation.</small>
+        </label>
+        <p className="split-destinations-note">Your connected wallet receives the Creator share. Project Treasury is separate from SPLIT&apos;s Protocol Treasury. Liquidity remains locked in SplitVault.</p>
+      </div>
+      <div className={`allocation-total ${total === 100 ? "valid" : "invalid"}`}><span>Project allocation total</span><strong>{total}%</strong><small>{total === 100 ? "Ready to continue" : total < 100 ? `${100 - total}% remains unallocated` : `${total - 100}% over allocation`}</small></div>
+      <div className="wizard-actions"><Link className="button button-outline" href="/launch/market"><Icon name="back" />Back</Link><button className="button button-primary" disabled={total !== 100 || !wholePercentages || !communityValid || !projectTreasuryValid} onClick={() => router.push("/launch/review")}>Continue <Icon name="arrow" /></button></div>
+    </section>
+    <section className="split-visual glass-panel"><span className="eyebrow">Live routing model</span><RouteCore allocations={allocations} /><SplitStrip allocations={allocations} /><p>Of each 1% SPLIT swap fee, 10% is protocol revenue. The remaining 90% follows this project split. Project allocation must equal exactly 100%.</p></section>
+  </div>;
 }
 
 function TokenPreview({ onContinue }: { onContinue: () => void }) {

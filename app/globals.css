@@ -390,3 +390,12 @@ html[data-motion="reduced"] .reveal { opacity:1;transform:none; }
 .token-card-actions .copy-contract { opacity:1;min-height:44px; }
 .token-card-actions > div > a { display:flex;align-items:center;gap:5px;min-height:44px; }
 @media (max-width:600px) { .token-card-actions { padding-inline:20px; } }
+
+.split-destinations { display:grid;gap:20px;min-width:0;margin-top:34px;padding-top:28px;border-top:1px solid var(--line-soft); }
+.split-destinations-heading p { margin:8px 0 0;color:var(--muted);font-size:12px;line-height:1.5; }
+.split-destination-field { display:grid;gap:9px;min-width:0;color:var(--ink);font-size:12px;font-weight:600; }
+.split-destination-field input { display:block;width:100%;min-width:0;height:52px;padding:0 14px;border:1px solid rgba(139,92,255,.34);background:#0c0614;color:var(--ink);font-size:13px;font-weight:400;letter-spacing:0;outline:0; }
+.split-destination-field input:focus { border-color:var(--purple);box-shadow:0 0 0 3px rgba(139,92,255,.08); }
+.split-destination-field input[aria-invalid="true"] { border-color:var(--red); }
+.split-destination-field small,.split-destinations-note { color:var(--muted);font-size:11px;font-weight:400;line-height:1.5; }
+.split-destinations-note { margin:0;padding:14px 16px;border:1px solid var(--line-soft);background:rgba(139,92,255,.05); }
