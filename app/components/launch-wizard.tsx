@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
 import { DEFAULT_SPLIT } from "../data/mock";
+import { MAX_TOKEN_NAME_CHARACTERS, MAX_TOKEN_SYMBOL_CHARACTERS, normalizeTokenName, normalizeTokenSymbol, validateTokenIdentity } from "../lib/projects/token-identity";
 import { Icon } from "./icons";
 import { useLaunchDraft } from "./providers";
 import { AppShell } from "./shell";
@@ -60,8 +61,7 @@ export function LaunchWizard({ step }: { step: LaunchStep }) {
   const index = steps.findIndex((item) => item.key === step);
   const router = useRouter();
   const { draft, draftHydrated, updateDraft } = useLaunchDraft();
-  const detailsValid = draft.name.trim().length >= 2 && new TextEncoder().encode(draft.name.trim()).length <= 64
-    && /^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim());
+  const detailsValid = validateTokenIdentity(draft.name, draft.symbol).valid;
   const marketValid = /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.initialLiquidity)
     && /^(?=.*[1-9])\d+(?:\.\d{1,18})?$/.test(draft.tokenSeedAmount)
     && (() => { try { return parseEther(draft.tokenSeedAmount) <= parseEther("1000000000"); } catch { return false; } })()
@@ -96,9 +96,14 @@ function DetailsStep({ resumeHref }: { resumeHref: string }) {
   const router = useRouter();
   const fileRef = useRef<HTMLInputElement>(null);
   const [touched, setTouched] = useState(false);
+  const [nameTouched, setNameTouched] = useState(false);
+  const [symbolTouched, setSymbolTouched] = useState(false);
   const [logoError, setLogoError] = useState("");
   const [dragging, setDragging] = useState(false);
-  const valid = draft.name.trim().length >= 2 && new TextEncoder().encode(draft.name.trim()).length <= 64 && /^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim());
+  const identity = validateTokenIdentity(draft.name, draft.symbol);
+  const valid = identity.valid;
+  const showNameError = Boolean(identity.nameError && (touched || nameTouched || draft.name.length > 0));
+  const showSymbolError = Boolean(identity.symbolError && (touched || symbolTouched || draft.symbol.length > 0));
   const continueFlow = () => { setTouched(true); if (valid) router.push("/launch/market"); };
   const resumeFlow = () => { setTouched(true); if (valid) router.push(resumeHref); };
   const handleLogo = async (file?: File) => {
@@ -118,8 +123,16 @@ function DetailsStep({ resumeHref }: { resumeHref: string }) {
         <h2>Create your<br /><span>token.</span></h2>
         <p>Give your protocol a name, a voice, and a destination.</p>
         <div className="form-grid">
-          <label>Token name*<input value={draft.name} onChange={(e) => updateDraft({ name: e.target.value })} placeholder="e.g. Orbit" aria-invalid={touched && draft.name.trim().length < 2} /></label>
-          <label>Token symbol*<input value={draft.symbol} onChange={(e) => updateDraft({ symbol: e.target.value.toUpperCase().slice(0, 8) })} placeholder="ORB" aria-invalid={touched && !/^[A-Za-z0-9]{2,8}$/.test(draft.symbol)} /></label>
+          <label className="token-identity-field">
+            <span className="identity-field-heading"><span>Token name*</span><span className="identity-counter" id="token-name-count">{identity.nameCharacters}/{MAX_TOKEN_NAME_CHARACTERS}</span></span>
+            <input value={draft.name} onChange={(e) => { setNameTouched(true); updateDraft({ name: e.target.value }); }} onBlur={(e) => { setNameTouched(true); updateDraft({ name: normalizeTokenName(e.target.value) }); }} placeholder="e.g. Orbit" aria-invalid={showNameError} aria-describedby={showNameError ? "token-name-count token-name-error" : "token-name-count"} />
+            {showNameError ? <small className="form-error" id="token-name-error">{identity.nameError}</small> : null}
+          </label>
+          <label className="token-identity-field">
+            <span className="identity-field-heading"><span>Token symbol*</span><span className="identity-counter" id="token-symbol-count">{identity.symbolCharacters}/{MAX_TOKEN_SYMBOL_CHARACTERS}</span></span>
+            <input value={draft.symbol} onChange={(e) => { setSymbolTouched(true); updateDraft({ symbol: normalizeTokenSymbol(e.target.value) }); }} onBlur={() => setSymbolTouched(true)} placeholder="ORB" aria-invalid={showSymbolError} aria-describedby={showSymbolError ? "token-symbol-count token-symbol-error" : "token-symbol-count"} />
+            {showSymbolError ? <small className="form-error" id="token-symbol-error">{identity.symbolError}</small> : null}
+          </label>
           <label className="field-full">Description<textarea value={draft.description} onChange={(e) => updateDraft({ description: e.target.value })} placeholder="What is this token about?" maxLength={360} /></label>
           <label className="field-full">Token logo upload
             <input ref={fileRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { void handleLogo(e.target.files?.[0]); e.currentTarget.value = ""; }} />
@@ -141,7 +154,6 @@ function DetailsStep({ resumeHref }: { resumeHref: string }) {
           <label>Telegram<input value={draft.telegram} onChange={(e) => updateDraft({ telegram: e.target.value })} placeholder="https://t.me/" /></label>
           <label>Discord<input value={draft.discord} onChange={(e) => updateDraft({ discord: e.target.value })} placeholder="https://discord.gg/" /></label>
         </div>
-        {touched && !valid ? <p className="form-error">Enter a token name and a 2-8 character symbol.</p> : null}
         <button className="button button-primary form-continue" onClick={continueFlow}>Continue <Icon name="arrow" /></button>
       </section>
       <TokenPreview onContinue={resumeFlow} />

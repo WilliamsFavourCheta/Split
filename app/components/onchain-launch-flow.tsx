@@ -18,6 +18,7 @@ import { robinhoodMainnet, targetChainId } from "../web3/chains";
 import { getTransactionExplorerUrl } from "../web3/explorer";
 import { toLaunchErrorMessage } from "../web3/errors";
 import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
+import { validateTokenIdentity } from "../lib/projects/token-identity";
 
 type TxState = "idle" | "awaiting-signature" | "pending" | "indexing" | "error";
 
@@ -87,9 +88,9 @@ export function OnchainLaunchReview() {
     let quoteAmount: bigint;
     let tokenSeedAmount: bigint;
     const launchFee = parseEther("0.0005");
+    const identity = validateTokenIdentity(draft.name, draft.symbol);
     try {
-      if (draft.name.trim().length < 2 || new TextEncoder().encode(draft.name.trim()).length > 64
-        || !/^[A-Za-z0-9]{2,8}$/.test(draft.symbol.trim())) throw new Error("Enter a 2–64 byte name and a 2–8 character letter/number symbol. No transaction was sent.");
+      if (!identity.valid) throw new Error(`${identity.nameError || identity.symbolError} No transaction was sent.`);
       quoteAmount = parseEther(draft.initialLiquidity);
       tokenSeedAmount = parseEther(draft.tokenSeedAmount);
       if (quoteAmount <= BigInt(0) || tokenSeedAmount <= BigInt(0) || tokenSeedAmount > BigInt(1_000_000_000) * BigInt(10) ** BigInt(18)) throw new Error("Enter positive seed amounts, with no more than 1 billion seed tokens. No transaction was sent.");
@@ -122,8 +123,8 @@ export function OnchainLaunchReview() {
         abi: splitFactoryAbi,
         functionName: "launch",
         args: [{
-          name: draft.name.trim(),
-          symbol: draft.symbol.trim().toUpperCase(),
+          name: identity.name,
+          symbol: identity.symbol,
           tokenSeedAmount,
           seedQuoteAmount: quoteAmount,
           creatorBps: BigInt(draft.allocations.creator * 100),

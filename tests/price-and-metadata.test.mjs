@@ -15,6 +15,7 @@ const price = await loadPureModule("../app/lib/projects/price.ts");
 const metadata = await loadPureModule("../app/lib/projects/metadata-signing.ts");
 const image = await loadPureModule("../app/lib/projects/image-validation.ts");
 const drafts = await loadPureModule("../app/lib/projects/launch-draft.ts");
+const tokenIdentity = await loadPureModule("../app/lib/projects/token-identity.ts");
 const walletErrors = await loadPureModule("../app/web3/errors.ts");
 const Q96 = 2n ** 96n;
 
@@ -29,6 +30,22 @@ test("launch errors retain the wallet failure reason without exposing RPC creden
   assert.match(message, /RPC rejected the request/);
   assert.match(message, /\[RPC endpoint\]/);
   assert.doesNotMatch(message, /private-token/);
+});
+
+test("launch identity uses the same strict normalized name and symbol limits at submission", () => {
+  const valid = tokenIdentity.validateTokenIdentity(" Orbit ", " orb9 ");
+  assert.equal(valid.valid, true);
+  assert.equal(valid.name, "Orbit");
+  assert.equal(valid.symbol, "ORB9");
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z").valid, true);
+  assert.equal(tokenIdentity.validateTokenIdentity("A".repeat(50), "Z".repeat(10)).valid, true);
+  assert.equal(tokenIdentity.validateTokenIdentity("", "Z").valid, false);
+  assert.equal(tokenIdentity.validateTokenIdentity("A".repeat(51), "Z").valid, false);
+  assert.match(tokenIdentity.validateTokenIdentity("é".repeat(40), "Z").nameError, /64-byte/);
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "").valid, false);
+  assert.equal(tokenIdentity.validateTokenIdentity("A", "Z".repeat(11)).valid, false);
+  assert.match(tokenIdentity.validateTokenIdentity("A", "AB-C").symbolError, /A–Z/);
+  assert.match(tokenIdentity.validateTokenIdentity("A", "ß").symbolError, /A–Z/);
 });
 
 test("ETH per token inverts the native/token v4 price without zeroing extreme valid prices", () => {
