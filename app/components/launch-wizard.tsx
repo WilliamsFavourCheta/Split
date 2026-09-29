@@ -113,7 +113,7 @@ function DetailsStep() {
           <label className="field-full">Description<textarea value={draft.description} onChange={(e) => updateDraft({ description: e.target.value })} placeholder="What is this token about?" maxLength={360} /></label>
           <label className="field-full">Token logo upload
             <input ref={fileRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => { void handleLogo(e.target.files?.[0]); e.currentTarget.value = ""; }} />
-            <button type="button" className={`upload-dropzone ${dragging ? "is-dragging" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void handleLogo(e.dataTransfer.files[0]); }}>
+            <button type="button" className={`upload-dropzone ${dragging ? "is-dragging" : ""}`} onClick={() => fileRef.current?.click()} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); void handleLogo(e.dataTransfer.files[0]); }}>
               <Icon name="upload" />
               {draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={68} height={68} unoptimized alt="Token logo preview" /> : null}
               <span>{draft.logoName || <>Drop an image here or <b>browse</b></>}</span>
