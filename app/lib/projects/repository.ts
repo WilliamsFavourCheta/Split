@@ -2,7 +2,7 @@ import "server-only";
 import { isSupabaseConfigured, createServerSupabaseClient } from "../supabase/server";
 import type { DestinationType, ProjectStatus } from "../supabase/database.types";
 import { DEFAULT_SPLIT, type Allocation, type Token } from "../../data/mock";
-import { isAddress, zeroAddress } from "viem";
+import { formatUnits, isAddress, zeroAddress } from "viem";
 import { splitHookAbi, splitLiquidityVaultAbi } from "../../contracts/abis";
 import { indexerClient, RH_MAINNET_CHAIN_ID } from "../indexer/evm-source";
 import { sqrtPriceX96ToEthPerToken } from "./price";
@@ -114,6 +114,8 @@ export async function getProject(address: string) {
 export async function getProjectToken(address: string): Promise<Token | null> {
   const project = await getProject(address);
   if (!project) return null;
+  const { data: rawProject } = await createServerSupabaseClient().from("projects_raw_amounts_exact")
+    .select("total_supply_raw,seed_token_amount_raw,seed_quote_amount_raw").eq("id", project.id).maybeSingle();
   const feeRaw = project.fee_configs;
   const fee = Array.isArray(feeRaw) ? feeRaw[0] : feeRaw;
   const metricsRaw = project.project_metrics;
@@ -142,6 +144,9 @@ export async function getProjectToken(address: string): Promise<Token | null> {
     liquidity: metrics?.liquidity_usd ? `$${Number(metrics.liquidity_usd).toLocaleString()}` : "-",
     holders: metrics?.holder_count?.toLocaleString() ?? "-",
     price: "-",
+    totalSupply: rawProject?.total_supply_raw ? formatUnits(BigInt(rawProject.total_supply_raw), 18) : undefined,
+    initialSeedEth: rawProject?.seed_quote_amount_raw ? formatUnits(BigInt(rawProject.seed_quote_amount_raw), 18) : undefined,
+    initialSeedTokens: rawProject?.seed_token_amount_raw ? formatUnits(BigInt(rawProject.seed_token_amount_raw), 18) : undefined,
     launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "-",
     color: "#9b64ff",
     description: metadata?.description ?? project.description ?? "",

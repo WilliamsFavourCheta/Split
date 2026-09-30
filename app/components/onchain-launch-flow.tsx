@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useConnection, usePublicClient, useWalletClient } from "wagmi";
 import { decodeEventLog, formatEther, isAddress, isHash, parseEther, zeroHash } from "viem";
 import { getSplitFactoryAddress, productionLaunchEnabled } from "../contracts/addresses";
@@ -20,6 +21,7 @@ import { toLaunchErrorMessage } from "../web3/errors";
 import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 import { validateTokenIdentity } from "../lib/projects/token-identity";
 import type { LaunchDraft } from "../lib/projects/launch-draft";
+import { prepareLogo } from "../lib/projects/prepare-logo";
 
 type TxState = "idle" | "awaiting-signature" | "pending" | "indexing" | "error";
 const LAUNCH_FEE = parseEther("0.0005");
@@ -279,15 +281,21 @@ function ReviewSection({ title, editHref, children }: { title: string; editHref:
 }
 
 export function OnchainLaunchSuccessPage() {
-  const { draft, resetDraft } = useLaunchDraft();
+  const { draft, updateDraft, resetDraft } = useLaunchDraft();
   const { showToast } = useToast();
   const wallet = useWallet();
+  const router = useRouter();
   const publicClient = usePublicClient({ chainId: 4663 });
   const { data: walletClient } = useWalletClient();
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const [confirmed, setConfirmed] = useState<{ token: `0x${string}`; hash: `0x${string}` } | null>(null);
   const [verification, setVerification] = useState("Verifying the launch receipt on Robinhood Chain...");
   const [metadataState, setMetadataState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [metadataInfo, setMetadataInfo] = useState<{ checked: boolean; saved: boolean; logoUrl: string | null; error: string | null }>({ checked: false, saved: false, logoUrl: null, error: null });
+  const [logoSelectedAfterSave, setLogoSelectedAfterSave] = useState(false);
+  const [logoError, setLogoError] = useState("");
   const hasMetadata = Boolean(draft.logoDataUrl || draft.description.trim() || draft.website.trim() || draft.twitter.trim() || draft.telegram.trim() || draft.discord.trim());
+  const showSaveButton = metadataInfo.checked && (!metadataInfo.saved ? hasMetadata : logoSelectedAfterSave || (!metadataInfo.logoUrl && Boolean(draft.logoDataUrl)));
 
   const copyTokenAddress = async () => {
     if (!confirmed) return;
@@ -324,16 +332,52 @@ export function OnchainLaunchSuccessPage() {
     return () => { cancelled = true; };
   }, [publicClient]);
 
-  const saveLogo = async () => {
-    if (!confirmed || !walletClient || !wallet.address || wallet.status !== "connected") return;
-    setMetadataState("saving");
+  useEffect(() => {
+    if (!confirmed) return;
+    let cancelled = false;
+    void fetch(`/api/projects/metadata?token=${encodeURIComponent(confirmed.token)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const result = await response.json() as { saved?: boolean; logoUrl?: string | null; error?: string };
+        if (!response.ok) throw new Error(result.error || "Metadata status could not be checked.");
+        if (!cancelled) setMetadataInfo({ checked: true, saved: result.saved === true, logoUrl: result.logoUrl ?? null, error: null });
+      })
+      .catch((error) => {
+        if (!cancelled) setMetadataInfo({ checked: true, saved: false, logoUrl: null, error: error instanceof Error ? error.message : "Metadata status could not be checked." });
+      });
+    return () => { cancelled = true; };
+  }, [confirmed]);
+
+  const selectLogo = async (file?: File) => {
+    if (!file) return;
+    setLogoError("");
     try {
-      await uploadConfirmedProjectMetadata({ token: confirmed.token, account: wallet.address, walletClient, draft });
+      const logoDataUrl = await prepareLogo(file);
+      updateDraft({ logoName: file.name, logoDataUrl });
+      setLogoSelectedAfterSave(true);
+    } catch (error) {
+      setLogoError(error instanceof Error ? error.message : "The logo could not be prepared.");
+    }
+  };
+
+  const saveLogo = async () => {
+    if (!confirmed || !walletClient || !wallet.address || wallet.status !== "connected") {
+      setMetadataInfo((current) => ({ ...current, error: "Connect the creator wallet on Robinhood Chain to save metadata." }));
+      return;
+    }
+    setMetadataState("saving");
+    setMetadataInfo((current) => ({ ...current, error: null }));
+    try {
+      const logoUrl = await uploadConfirmedProjectMetadata({ token: confirmed.token, account: wallet.address, walletClient, draft });
       setMetadataState("saved");
+      setMetadataInfo({ checked: true, saved: true, logoUrl, error: null });
+      setLogoSelectedAfterSave(false);
       showToast("Project metadata saved", "success");
+      router.refresh();
     } catch (error) {
       setMetadataState("failed");
-      showToast(error instanceof Error ? error.message : "Logo persistence failed.", "error");
+      const message = error instanceof Error ? error.message : "Logo persistence failed.";
+      setMetadataInfo((current) => ({ ...current, error: message }));
+      showToast(message, "error");
     }
   };
 
@@ -343,8 +387,19 @@ export function OnchainLaunchSuccessPage() {
     <h1>{confirmed ? <>Launch<br /><span>confirmed.</span></> : <>Launch status<br /><span>unverified.</span></>}</h1>
     <p>{confirmed ? `Factory event confirms token ${confirmed.token}. The indexer and logo may still be syncing.` : verification}</p>
     {confirmed ? <div className="success-contract glass-panel"><span className="eyebrow">Token contract address (CA)</span><code>{confirmed.token}</code><div className="success-contract-actions"><button className="button button-primary" onClick={() => void copyTokenAddress()}><Icon name="copy" size={15} /> Copy CA</button><a className="button button-outline" href={`${robinhoodMainnet.blockExplorers.default.url}/address/${confirmed.token}`} target="_blank" rel="noreferrer">View contract <Icon name="external" size={15} /></a></div></div> : null}
-    {confirmed ? <div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link><a className="button button-outline" href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View transaction</a>{hasMetadata && metadataState !== "saved" ? <button className="button button-outline" disabled={metadataState === "saving" || wallet.status !== "connected"} onClick={() => void saveLogo()}>{metadataState === "saving" ? "Saving metadata..." : "Save project metadata"}</button> : null}</div> : null}
-    {confirmed && hasMetadata && metadataState !== "saved" ? <p>Keep this local draft until its metadata is saved. A wallet signature is required; no chain transaction is sent for metadata.</p> : null}
+    {confirmed ? <div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link><a className="button button-outline" href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View transaction</a></div> : null}
+    {confirmed ? <section className="success-metadata glass-panel" aria-label="Project metadata">
+      <span className="eyebrow">Project profile</span>
+      <h2>{metadataInfo.logoUrl ? "Logo saved" : metadataInfo.saved ? "Metadata saved; logo missing" : "Add your token logo"}</h2>
+      <p>{metadataInfo.logoUrl ? "The saved logo is available to Explore and the token page." : "No logo is saved for this token yet. Choose a PNG, JPG, or WebP image up to 512 KiB and save it with a creator wallet signature."}</p>
+      <input ref={logoInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void selectLogo(event.target.files?.[0]); event.currentTarget.value = ""; }} />
+      <div className="success-metadata-actions"><button className="button button-outline" type="button" onClick={() => logoInputRef.current?.click()}>Choose logo</button>{draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={48} height={48} unoptimized alt="Selected logo preview" /> : null}<span>{draft.logoName || (metadataInfo.logoUrl ? "Saved logo is active" : "No logo selected")}</span></div>
+      {showSaveButton ? <button className="button button-primary" disabled={metadataState === "saving"} onClick={() => void saveLogo()}>{metadataState === "saving" ? "Saving metadata..." : metadataInfo.saved ? "Save logo" : "Save project metadata"}</button> : null}
+      {metadataInfo.saved && !showSaveButton ? <p className="success-text" role="status">Project metadata saved{metadataInfo.logoUrl ? " with logo" : " without a logo"}.</p> : null}
+      {logoError ? <p className="form-error" role="alert">{logoError}</p> : null}
+      {metadataInfo.error ? <p className="form-error" role="alert">{metadataInfo.error}</p> : null}
+      <small>A wallet signature is required; saving metadata does not send a chain transaction. Keep this draft until the save succeeds.</small>
+    </section> : null}
     <div className="success-actions"><button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>
   </div></AppShell>;
 }

@@ -59,6 +59,12 @@ test("ETH per token inverts the native/token v4 price without zeroing extreme va
   assert.equal(price.sqrtPriceX96ToEthPerToken("1e30"), null);
 });
 
+test("market cap chart converts official ETH price using the fixed one-billion token supply", () => {
+  assert.equal(price.priceToMarketCapEth(1e-9), 1);
+  assert.equal(price.priceToMarketCapEth(1.25e-9), 1.25);
+  assert.equal(price.priceToMarketCapEth(0), null);
+});
+
 test("chart period selection handles zero, one, and many canonical observations", () => {
   assert.deepEqual(price.selectPriceSnapshots([], "1D"), []);
   const one = [{ priceEth: 1, snapshotAt: "2026-09-28T00:00:00Z" }];

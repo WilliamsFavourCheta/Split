@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { formatEther, isAddress, parseEther } from "viem";
 import { DEFAULT_SPLIT } from "../data/mock";
 import { MAX_TOKEN_NAME_CHARACTERS, MAX_TOKEN_SYMBOL_CHARACTERS, normalizeTokenName, normalizeTokenSymbol, validateTokenIdentity } from "../lib/projects/token-identity";
-import { MAX_IMAGE_BYTES, mimeExtensions } from "../lib/projects/image-validation";
+import { prepareLogo } from "../lib/projects/prepare-logo";
 import { Icon } from "./icons";
 import { useLaunchDraft } from "./providers";
 import { AppShell } from "./shell";
@@ -28,34 +28,6 @@ const steps: { key: LaunchStep; number: number; label: string; href: string }[] 
   { key: "split", number: 3, label: "Split", href: "/launch/split" },
   { key: "review", number: 4, label: "Review", href: "/launch/review" },
 ];
-
-async function prepareLogo(file: File) {
-  if (!mimeExtensions[file.type]) throw new Error("Choose a PNG, JPG, or WebP image.");
-  if (file.size > MAX_IMAGE_BYTES) throw new Error("The image must be 512 KiB or smaller.");
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("This browser could not prepare the image.");
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-
-  let blob: Blob | null = null;
-  for (const quality of [0.84, 0.72, 0.6]) {
-    blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", quality));
-    if (blob && blob.size <= MAX_IMAGE_BYTES) break;
-  }
-  if (!blob || blob.size > MAX_IMAGE_BYTES) throw new Error("This image could not be compressed small enough. Try a simpler or smaller image.");
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("The image could not be read."));
-    reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("The image could not be read."));
-    reader.readAsDataURL(blob);
-  });
-  return dataUrl;
-}
 
 export function LaunchWizard({ step }: { step: LaunchStep }) {
   const index = steps.findIndex((item) => item.key === step);

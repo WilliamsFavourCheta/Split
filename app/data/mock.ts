@@ -14,6 +14,9 @@ export type Token = {
   liquidity: string;
   holders: string;
   price: string;
+  totalSupply?: string;
+  initialSeedEth?: string;
+  initialSeedTokens?: string;
   launched: string;
   color: string;
   description: string;

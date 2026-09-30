@@ -21,11 +21,14 @@ export async function GET(request: Request) {
     const { data: state, error: stateError } = await client.from("project_metadata_update_state")
       .select("nonce,next_allowed_at,claim_expires_at").eq("project_id", project.id).maybeSingle();
     if (stateError) throw stateError;
+    const { data: metadata, error: metadataError } = await client.from("project_metadata")
+      .select("logo_url").eq("project_id", project.id).maybeSingle();
+    if (metadataError) throw metadataError;
     const retryAt = Math.max(
       state ? Date.parse(state.next_allowed_at) : 0,
       state?.claim_expires_at ? Date.parse(state.claim_expires_at) : 0,
     );
-    return Response.json({ nonce: state?.nonce ?? 0, retryAfter: Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)) },
+    return Response.json({ nonce: state?.nonce ?? 0, retryAfter: Math.max(0, Math.ceil((retryAt - Date.now()) / 1000)), saved: Boolean(metadata), logoUrl: metadata?.logo_url ?? null },
       { headers: { "Cache-Control": "no-store" } });
   } catch {
     return Response.json({ error: "Metadata update state is unavailable." }, { status: 503 });

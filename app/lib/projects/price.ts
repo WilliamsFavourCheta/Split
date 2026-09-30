@@ -13,6 +13,14 @@ export function sqrtPriceX96ToEthPerToken(value: string) {
 }
 
 export type PriceSnapshot = { priceEth: number; snapshotAt: string };
+export const SPLIT_FIXED_SUPPLY_TOKENS = 1_000_000_000;
+
+/** Fixed-supply, fully diluted market cap quoted in native ETH. */
+export function priceToMarketCapEth(priceEth: number) {
+  const value = priceEth * SPLIT_FIXED_SUPPLY_TOKENS;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 export type PricePeriod = "1D" | "7D" | "30D" | "ALL";
 
 export function selectPriceSnapshots(snapshots: PriceSnapshot[], period: PricePeriod) {

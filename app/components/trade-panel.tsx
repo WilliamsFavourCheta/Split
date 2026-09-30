@@ -112,8 +112,15 @@ export function TradePanel({ token }: { token: Token }) {
   }, [amount, direction, poolReady, publicClient, tokenAddress, hook, token.poolId]);
 
   const submit = async () => {
-    if (!poolReady || !quote || quote.text !== `${direction}:${amount}:${token.poolId}` || !wallet.address || wallet.status !== "connected"
-      || wallet.chainId !== 4663 || !walletClient || !publicClient || !connector || !executor || !tokenAddress || pending) return;
+    if (pending) return;
+    if (!poolReady || !quote || quote.text !== `${direction}:${amount}:${token.poolId}` || !publicClient || !executor || !tokenAddress) {
+      setTradeError("The official pool quote is not ready. Wait for a fresh quote, then try again.");
+      return;
+    }
+    if (!wallet.address || wallet.status !== "connected" || wallet.chainId !== 4663 || !walletClient || !connector) {
+      setTradeError("Connect your wallet on Robinhood Chain and wait for it to finish loading before trading.");
+      return;
+    }
     if (balance === null || balance < quote.amountIn || (direction === "buy" && balance === quote.amountIn)) {
       setTradeError("Insufficient balance for this trade and network gas.");
       return;

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Allocation } from "../data/mock";
-import { selectPriceSnapshots, type PriceSnapshot, type PricePeriod } from "../lib/projects/price";
+import { priceToMarketCapEth, selectPriceSnapshots, type PriceSnapshot, type PricePeriod } from "../lib/projects/price";
 
 export function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -55,7 +55,7 @@ export function Donut({ allocations, size = 76 }: { allocations: Allocation[]; s
   return <svg className="donut" width={size} height={size} viewBox="0 0 100 100" aria-label="Fee split chart">{circles}</svg>;
 }
 
-function formatSnapshotPrice(value: number) {
+function formatMarketCap(value: number) {
   return `${new Intl.NumberFormat("en-US", { maximumSignificantDigits: 6 }).format(value)} ETH`;
 }
 
@@ -64,20 +64,20 @@ export function TokenPriceChart({ ticker, snapshots, status = "ready" }: { ticke
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const visible = useMemo(() => selectPriceSnapshots(snapshots, period), [period, snapshots]);
-  const values = visible.map((point) => point.priceEth);
+  const values = visible.map((point) => priceToMarketCapEth(point.priceEth) ?? 0);
   const low = Math.min(...values);
   const high = Math.max(...values);
   const spread = Math.max(high - low, Math.abs(high) * 0.03, Number.MIN_VALUE);
   const coords = visible.map((point, index) => ({
     x: visible.length === 1 ? 425 : 12 + (index / (visible.length - 1)) * 826,
-    y: 12 + ((high + spread * 0.08 - point.priceEth) / (spread * 1.16)) * 180,
+    y: 12 + ((high + spread * 0.08 - values[index]) / (spread * 1.16)) * 180,
   }));
   const line = coords.map((point) => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(" ");
   const area = coords.length > 1 ? `M${coords[0].x},210 L${coords.map((point) => `${point.x},${point.y}`).join(" L")} L${coords.at(-1)?.x},210 Z` : "";
   const activeIndex = hoverIndex === null ? visible.length - 1 : hoverIndex;
   const activePoint = visible[activeIndex];
-  const change = visible.length > 1 && visible[0].priceEth > 0
-    ? ((visible.at(-1)!.priceEth - visible[0].priceEth) / visible[0].priceEth) * 100
+  const change = values.length > 1 && values[0] > 0
+    ? ((values.at(-1)! - values[0]) / values[0]) * 100
     : null;
   const updateHover = (event: React.PointerEvent<SVGSVGElement>) => {
     if (visible.length < 2 || !svgRef.current) return;
@@ -86,10 +86,10 @@ export function TokenPriceChart({ ticker, snapshots, status = "ready" }: { ticke
     setHoverIndex(Math.round(x * (visible.length - 1)));
   };
 
-  return <section className="token-price-chart glass-panel" aria-label={`${ticker} historical price chart`}>
-    <div className="token-chart-head"><div><span className="eyebrow">Official pool price in ETH per token</span><strong>{activePoint ? formatSnapshotPrice(activePoint.priceEth) : "No price data"}</strong>{change !== null ? <small className={change >= 0 ? "success-text" : "error-text"}>{change >= 0 ? "+" : ""}{change.toFixed(2)}% in selected period</small> : null}</div><div className="period-tabs" role="tablist" aria-label="Price chart period">{(["1D", "7D", "30D", "ALL"] as const).map((item) => <button type="button" key={item} role="tab" aria-selected={period === item} className={period === item ? "active" : ""} onClick={() => { setPeriod(item); setHoverIndex(null); }}>{item}</button>)}</div></div>
-    {visible.length > 0 ? <><div className="token-chart-frame"><svg ref={svgRef} viewBox="0 0 850 220" preserveAspectRatio="none" role="img" aria-label={`${visible.length} indexed pool price events`} onPointerMove={updateHover} onPointerLeave={() => setHoverIndex(null)}><defs><linearGradient id="token-chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9c6cff" stopOpacity=".3" /><stop offset="100%" stopColor="#9c6cff" stopOpacity="0" /></linearGradient></defs>{[24, 78, 132, 186].map((y) => <line key={y} x1="0" y1={y} x2="850" y2={y} className="chart-grid-line" />)}{area ? <path d={area} fill="url(#token-chart-fill)" /> : null}{coords.length > 1 ? <polyline points={line} className="chart-line" /> : coords.map((point) => <circle key={`${point.x}:${point.y}`} cx={point.x} cy={point.y} r="5" className="token-chart-dot" />)}{activePoint && coords[activeIndex] ? <circle cx={coords[activeIndex].x} cy={coords[activeIndex].y} r="5" className="token-chart-focus" /> : null}</svg>{activePoint ? <div className="token-chart-tooltip" style={{ left: `${Math.min(88, Math.max(12, (coords[activeIndex]?.x ?? 425) / 8.5))}%` }}><strong>{formatSnapshotPrice(activePoint.priceEth)}</strong><small>{new Date(activePoint.snapshotAt).toLocaleString()}</small></div> : null}</div><div className="token-chart-axis"><span>{visible[0] ? new Date(visible[0].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.length > 2 ? new Date(visible[Math.floor(visible.length / 2)].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.at(-1) ? new Date(visible.at(-1)!.snapshotAt).toLocaleDateString() : ""}</span></div></> : <div className="token-chart-empty"><div className="token-chart-grid" /><span className="eyebrow">{status === "migration-required" ? "Price-history migration required" : status === "unconfigured" ? "Chart data not configured" : "Waiting for official pool prices"}</span><p>{status === "migration-required" ? "Price-history indexing is unavailable. Ask the operator to verify the already-applied migration and indexer." : status === "unconfigured" ? "Configure the SPLIT indexer and database to load official pool price events." : "There are no official pool price observations for this period yet. The chart uses canonical Robinhood Chain launch and Swap events; no sample prices are shown."}</p></div>}
-    <small className="token-chart-source">Source: post-swap sqrtPriceX96 from the Robinhood Chain Uniswap v4 PoolManager.</small>
+  return <section className="token-price-chart glass-panel" aria-label={`${ticker} market cap chart in ETH`}>
+    <div className="token-chart-head"><div><span className="eyebrow">Fully diluted market cap in ETH</span><strong>{activePoint ? formatMarketCap(values[activeIndex]) : "No market cap data"}</strong>{change !== null ? <small className={change >= 0 ? "success-text" : "error-text"}>{change >= 0 ? "+" : ""}{change.toFixed(2)}% in selected period</small> : null}</div><div className="period-tabs" role="tablist" aria-label="Market cap chart period">{(["1D", "7D", "30D", "ALL"] as const).map((item) => <button type="button" key={item} role="tab" aria-selected={period === item} className={period === item ? "active" : ""} onClick={() => { setPeriod(item); setHoverIndex(null); }}>{item}</button>)}</div></div>
+    {visible.length > 0 ? <><div className="token-chart-frame"><svg ref={svgRef} viewBox="0 0 850 220" preserveAspectRatio="none" role="img" aria-label={`${visible.length} indexed market cap observations`} onPointerMove={updateHover} onPointerLeave={() => setHoverIndex(null)}><defs><linearGradient id="token-chart-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#9c6cff" stopOpacity=".3" /><stop offset="100%" stopColor="#9c6cff" stopOpacity="0" /></linearGradient></defs>{[24, 78, 132, 186].map((y) => <line key={y} x1="0" y1={y} x2="850" y2={y} className="chart-grid-line" />)}{area ? <path d={area} fill="url(#token-chart-fill)" /> : null}{coords.length > 1 ? <polyline points={line} className="chart-line" /> : coords.map((point) => <circle key={`${point.x}:${point.y}`} cx={point.x} cy={point.y} r="5" className="token-chart-dot" />)}{activePoint && coords[activeIndex] ? <circle cx={coords[activeIndex].x} cy={coords[activeIndex].y} r="5" className="token-chart-focus" /> : null}</svg>{activePoint ? <div className="token-chart-tooltip" style={{ left: `${Math.min(88, Math.max(12, (coords[activeIndex]?.x ?? 425) / 8.5))}%` }}><strong>{formatMarketCap(values[activeIndex])}</strong><small>{new Date(activePoint.snapshotAt).toLocaleString()}</small></div> : null}</div><div className="token-chart-axis"><span>{visible[0] ? new Date(visible[0].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.length > 2 ? new Date(visible[Math.floor(visible.length / 2)].snapshotAt).toLocaleDateString() : ""}</span><span>{visible.at(-1) ? new Date(visible.at(-1)!.snapshotAt).toLocaleDateString() : ""}</span></div>{visible.length === 1 ? <p className="gas-disclaimer">One launch observation is available. The chart line will form as official pool swaps are indexed.</p> : null}</> : <div className="token-chart-empty"><div className="token-chart-grid" /><span className="eyebrow">{status === "migration-required" ? "Price-history migration required" : status === "unconfigured" ? "Chart data not configured" : "Waiting for official pool prices"}</span><p>{status === "migration-required" ? "Price-history indexing is unavailable. Ask the operator to verify the already-applied migration and indexer." : status === "unconfigured" ? "Configure the SPLIT indexer and database to load official pool events." : "There are no official pool observations for this period yet. Market cap uses the canonical launch and Swap prices; no sample data is shown."}</p></div>}
+    <small className="token-chart-source">Source: official PoolManager sqrtPriceX96 × fixed 1 billion token supply. Quoted in ETH; no USD oracle is assumed.</small>
   </section>;
 }
 
