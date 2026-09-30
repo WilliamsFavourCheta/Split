@@ -9,7 +9,6 @@ import { decodeEventLog, formatEther, isAddress, isHash, parseEther, zeroHash } 
 import { getSplitFactoryAddress, productionLaunchEnabled } from "../contracts/addresses";
 import { splitFactoryAbi } from "../contracts/abis";
 import { waitForSuccessfulReceipt } from "../contracts/interactions";
-import { createBrowserSupabaseClient, isSupabaseConfigured } from "../lib/supabase/client";
 import { DEFAULT_SPLIT, type Allocation } from "../data/mock";
 import { useLaunchDraft, useToast, useWallet } from "./providers";
 import { AppShell } from "./shell";
@@ -45,7 +44,7 @@ function launchArguments(draft: LaunchDraft) {
 }
 
 export function OnchainLaunchReview() {
-  const { draft } = useLaunchDraft();
+  const { draft, updateDraft } = useLaunchDraft();
   const wallet = useWallet();
   const { connector } = useConnection();
   const { data: walletClient } = useWalletClient();
@@ -97,6 +96,10 @@ export function OnchainLaunchReview() {
   const deploy = async () => {
     setTxError(null);
     setTxNotice(null);
+    if (draft.pendingLaunchTx && isHash(draft.pendingLaunchTx)) {
+      router.push(`/launch/success?tx=${draft.pendingLaunchTx}`);
+      return;
+    }
     if (!productionLaunchEnabled) {
       setTxError("Production token launching is disabled in this pre-launch preview. No transaction was sent.");
       setTxState("error");
@@ -180,6 +183,7 @@ export function OnchainLaunchReview() {
         value: quoteAmount + LAUNCH_FEE,
         account: wallet.address,
       });
+      updateDraft({ pendingLaunchTx: submittedHash });
       setTxHash(submittedHash);
       setTxState("pending");
       const receipt = await waitForSuccessfulReceipt(publicClient, submittedHash);
@@ -197,26 +201,7 @@ export function OnchainLaunchReview() {
       if (!confirmedToken) throw new Error("Confirmed onchain, but the TokenLaunched event could not be read. Use the transaction link to verify it.");
 
       setTxState("indexing");
-      let indexed = false;
-      if (isSupabaseConfigured) {
-        const supabase = createBrowserSupabaseClient();
-        for (let attempt = 0; attempt < 15; attempt += 1) {
-          const { data } = await supabase.from("projects").select("id").eq("chain_id", 4663).eq("token_address", confirmedToken.toLowerCase()).maybeSingle();
-          if (data) { indexed = true; break; }
-          await new Promise((resolve) => window.setTimeout(resolve, 1_000));
-        }
-      }
-      if (!indexed) showToast("Launch confirmed. Indexing your project...", "default");
-      let metadataSaved = false;
-      if (indexed) {
-        try {
-          await uploadConfirmedProjectMetadata({ token: confirmedToken, account: wallet.address, walletClient, draft });
-          metadataSaved = true;
-        } catch (metadataError) {
-          showToast(metadataError instanceof Error ? metadataError.message : "Logo persistence failed.", "error");
-        }
-      }
-      router.push(`/launch/success?token=${confirmedToken}&tx=${submittedHash}&indexed=${indexed ? "1" : "0"}&metadata=${metadataSaved ? "saved" : "pending"}`);
+      router.push(`/launch/success?tx=${submittedHash}`);
     } catch (error) {
       if (submittedHash) setTxHash(submittedHash);
       const message = chainConfirmed
@@ -227,11 +212,12 @@ export function OnchainLaunchReview() {
       setTxError(message);
       setTxState(chainConfirmed ? "indexing" : "error");
       showToast(message, chainConfirmed ? "default" : "error");
-      if (chainConfirmed && submittedHash) router.push(`/launch/success?tx=${submittedHash}&indexed=0`);
+      if (chainConfirmed && submittedHash) router.push(`/launch/success?tx=${submittedHash}`);
     }
   };
 
-  const actionLabel = !productionLaunchEnabled ? "Pre-launch preview"
+  const actionLabel = draft.pendingLaunchTx ? "Resume launch completion"
+    : !productionLaunchEnabled ? "Pre-launch preview"
     : wallet.status === "wrong-network" ? "Switch Network"
     : wallet.status === "connecting" ? "Connecting Wallet"
       : wallet.status === "restoring" ? "Restoring Wallet"
@@ -267,7 +253,7 @@ export function OnchainLaunchReview() {
       <div className="deploy-cost"><span>Target network</span><strong>{wallet.targetChainName}</strong><span>Factory</span><strong>{factoryAddress ? `${factoryAddress.slice(0, 8)}...${factoryAddress.slice(-6)}` : "Not configured"}</strong><span>Fee configuration</span><strong>{factoryAddress ? "Onchain / immutable" : "Awaiting verified deployment"}</strong></div>
       <div className="launch-send-amount"><span>Exact wallet transaction value</span><strong>{totalEthRequired === "Unavailable" ? totalEthRequired : `${totalEthRequired} ETH`}</strong><small>{draft.initialLiquidityExplicit ? `${draft.initialLiquidity} ETH initial liquidity + 0.0005 ETH fixed launch fee. Network gas is separate.` : "Enter initial ETH liquidity on the Market step."}</small></div>
       {largeLiquidity ? <div className="high-liquidity-warning"><strong>Large initial liquidity: {draft.initialLiquidity} ETH</strong><p>The wallet will request {totalEthRequired} ETH plus gas. Type the exact liquidity amount below to confirm before deploying.</p><label>Confirm initial liquidity amount<input type="text" inputMode="decimal" value={largeAmountConfirmation} onChange={(event) => setLargeAmountConfirmation(event.target.value)} placeholder={`Type ${draft.initialLiquidity}`} autoComplete="off" /></label></div> : null}
-      <button className="button button-primary deploy-button" disabled={!productionLaunchEnabled || busy || (!factoryAddress && wallet.status === "connected") || (wallet.status === "connected" && largeLiquidity && largeAmountConfirmation.trim() !== draft.initialLiquidity)} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled ? "lock" : wallet.status === "wrong-network" ? "globe" : wallet.status === "connected" ? "arrow" : "wallet"} /></button>
+      <button className="button button-primary deploy-button" disabled={(!productionLaunchEnabled && !draft.pendingLaunchTx) || busy || (!draft.pendingLaunchTx && !factoryAddress && wallet.status === "connected") || (!draft.pendingLaunchTx && wallet.status === "connected" && largeLiquidity && largeAmountConfirmation.trim() !== draft.initialLiquidity)} onClick={() => void deploy()}>{busy ? <><span className="spinner" />{actionLabel}</> : actionLabel} <Icon name={!productionLaunchEnabled && !draft.pendingLaunchTx ? "lock" : wallet.status === "wrong-network" ? "globe" : "arrow"} /></button>
       {txHash && transactionUrl ? <a className="deploy-disclaimer" href={transactionUrl} target="_blank" rel="noreferrer">View transaction {txHash.slice(0, 10)}...</a> : null}
       {txNotice ? <p className="deploy-disclaimer" role="status">{txNotice}</p> : null}
       {txError ? <p className="form-error" role="alert">{txError}</p> : null}
@@ -281,21 +267,26 @@ function ReviewSection({ title, editHref, children }: { title: string; editHref:
 }
 
 export function OnchainLaunchSuccessPage() {
-  const { draft, updateDraft, resetDraft } = useLaunchDraft();
+  const { draft, draftHydrated, updateDraft, resetDraft } = useLaunchDraft();
   const { showToast } = useToast();
   const wallet = useWallet();
   const router = useRouter();
   const publicClient = usePublicClient({ chainId: 4663 });
   const { data: walletClient } = useWalletClient();
   const logoInputRef = useRef<HTMLInputElement>(null);
-  const [confirmed, setConfirmed] = useState<{ token: `0x${string}`; hash: `0x${string}` } | null>(null);
-  const [verification, setVerification] = useState("Verifying the launch receipt on Robinhood Chain...");
-  const [metadataState, setMetadataState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
-  const [metadataInfo, setMetadataInfo] = useState<{ checked: boolean; saved: boolean; logoUrl: string | null; error: string | null }>({ checked: false, saved: false, logoUrl: null, error: null });
-  const [logoSelectedAfterSave, setLogoSelectedAfterSave] = useState(false);
+  const completionInFlight = useRef(false);
+  const [confirmed, setConfirmed] = useState<{ token: `0x${string}`; hash: `0x${string}`; creator: `0x${string}`; name: string; symbol: string } | null>(null);
+  const [verification, setVerification] = useState("Checking the Robinhood Chain launch transaction...");
+  const [receiptReverted, setReceiptReverted] = useState(false);
+  const [phase, setPhase] = useState<"checking" | "indexing" | "ready" | "saving" | "complete" | "error">("checking");
+  const [readinessAttempt, setReadinessAttempt] = useState(0);
+  const [completionError, setCompletionError] = useState("");
   const [logoError, setLogoError] = useState("");
-  const hasMetadata = Boolean(draft.logoDataUrl || draft.description.trim() || draft.website.trim() || draft.twitter.trim() || draft.telegram.trim() || draft.discord.trim());
-  const showSaveButton = metadataInfo.checked && (!metadataInfo.saved ? hasMetadata : logoSelectedAfterSave || (!metadataInfo.logoUrl && Boolean(draft.logoDataUrl)));
+  const [recoveryDraft, setRecoveryDraft] = useState({ logoName: "", logoDataUrl: "", description: "", website: "", twitter: "", telegram: "", discord: "" });
+  const draftMatchesLaunch = Boolean(draftHydrated && confirmed
+    && draft.name.trim() === confirmed.name && draft.symbol.trim() === confirmed.symbol
+    && (!draft.pendingLaunchTx || draft.pendingLaunchTx.toLowerCase() === confirmed.hash.toLowerCase()));
+  const metadataDraft = draftMatchesLaunch ? draft : recoveryDraft;
 
   const copyTokenAddress = async () => {
     if (!confirmed) return;
@@ -315,14 +306,17 @@ export function OnchainLaunchSuccessPage() {
       return;
     }
     let cancelled = false;
-    void publicClient.getTransactionReceipt({ hash }).then((receipt) => {
+    void publicClient.waitForTransactionReceipt({ hash }).then((receipt) => {
       if (cancelled) return;
-      if (receipt.status !== "success") throw new Error("The launch transaction did not succeed.");
+      if (receipt.status !== "success") {
+        setReceiptReverted(true);
+        throw new Error("The launch transaction reverted. Your draft is still saved.");
+      }
       for (const log of receipt.logs) {
         if (log.address.toLowerCase() !== factory.toLowerCase()) continue;
         try {
           const event = decodeEventLog({ abi: splitFactoryAbi, eventName: "TokenLaunched", data: log.data, topics: log.topics });
-          setConfirmed({ token: event.args.token, hash });
+          setConfirmed({ token: event.args.token, hash, creator: event.args.creator, name: event.args.name, symbol: event.args.symbol });
           setVerification("");
           return;
         } catch { /* Other factory logs are allowed in the receipt. */ }
@@ -335,71 +329,94 @@ export function OnchainLaunchSuccessPage() {
   useEffect(() => {
     if (!confirmed) return;
     let cancelled = false;
+    let timer: number | undefined;
     void fetch(`/api/projects/metadata?token=${encodeURIComponent(confirmed.token)}`, { cache: "no-store" })
       .then(async (response) => {
-        const result = await response.json() as { saved?: boolean; logoUrl?: string | null; error?: string };
-        if (!response.ok) throw new Error(result.error || "Metadata status could not be checked.");
-        if (!cancelled) setMetadataInfo({ checked: true, saved: result.saved === true, logoUrl: result.logoUrl ?? null, error: null });
+        const result = await response.json() as { saved?: boolean; error?: string };
+        if (cancelled) return;
+        if (response.status === 409) {
+          setPhase("indexing");
+          timer = window.setTimeout(() => setReadinessAttempt((value) => value + 1), 3000);
+          return;
+        }
+        if (!response.ok) throw new Error(result.error || "Project readiness could not be checked.");
+        setCompletionError("");
+        setPhase(result.saved ? "complete" : "ready");
       })
       .catch((error) => {
-        if (!cancelled) setMetadataInfo({ checked: true, saved: false, logoUrl: null, error: error instanceof Error ? error.message : "Metadata status could not be checked." });
+        if (!cancelled) {
+          setPhase("error");
+          setCompletionError(error instanceof Error ? error.message : "Project readiness could not be checked.");
+        }
       });
-    return () => { cancelled = true; };
-  }, [confirmed]);
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [confirmed, readinessAttempt]);
+
+  useEffect(() => {
+    if (phase !== "complete" || !confirmed || !draftMatchesLaunch) return;
+    resetDraft();
+    router.refresh();
+  }, [phase, confirmed, draftMatchesLaunch, resetDraft, router]);
 
   const selectLogo = async (file?: File) => {
     if (!file) return;
     setLogoError("");
     try {
       const logoDataUrl = await prepareLogo(file);
-      updateDraft({ logoName: file.name, logoDataUrl });
-      setLogoSelectedAfterSave(true);
+      if (draftMatchesLaunch) updateDraft({ logoName: file.name, logoDataUrl });
+      else setRecoveryDraft((current) => ({ ...current, logoName: file.name, logoDataUrl }));
     } catch (error) {
       setLogoError(error instanceof Error ? error.message : "The logo could not be prepared.");
     }
   };
 
-  const saveLogo = async () => {
-    if (!confirmed || !walletClient || !wallet.address || wallet.status !== "connected") {
-      setMetadataInfo((current) => ({ ...current, error: "Connect the creator wallet on Robinhood Chain to save metadata." }));
+  const completeLaunch = async () => {
+    if (!confirmed || phase !== "ready" || !draftHydrated || completionInFlight.current) return;
+    if (!walletClient || !wallet.address || wallet.status !== "connected" || wallet.address.toLowerCase() !== confirmed.creator.toLowerCase()) {
+      setCompletionError("Connect the original creator wallet on Robinhood Chain to complete this launch.");
       return;
     }
-    setMetadataState("saving");
-    setMetadataInfo((current) => ({ ...current, error: null }));
+    completionInFlight.current = true;
+    setPhase("saving");
+    setCompletionError("");
     try {
-      const logoUrl = await uploadConfirmedProjectMetadata({ token: confirmed.token, account: wallet.address, walletClient, draft });
-      setMetadataState("saved");
-      setMetadataInfo({ checked: true, saved: true, logoUrl, error: null });
-      setLogoSelectedAfterSave(false);
-      showToast("Project metadata saved", "success");
-      router.refresh();
+      await uploadConfirmedProjectMetadata({ token: confirmed.token, account: wallet.address, walletClient, draft: metadataDraft });
+      setPhase("complete");
+      showToast("Launch complete", "success");
     } catch (error) {
-      setMetadataState("failed");
-      const message = error instanceof Error ? error.message : "Logo persistence failed.";
-      setMetadataInfo((current) => ({ ...current, error: message }));
+      const message = error instanceof Error ? error.message : "Project setup could not be completed.";
+      setCompletionError(message);
+      setPhase("ready");
       showToast(message, "error");
+    } finally {
+      completionInFlight.current = false;
     }
+  };
+
+  const completionAction = async () => {
+    if (wallet.status === "wrong-network") { await wallet.switchNetwork(); return; }
+    if (wallet.status !== "connected") { await wallet.openWallet(); return; }
+    await completeLaunch();
   };
 
   return <AppShell footer={false}><div className="success-page section-shell">
     <div className="success-orbit"><span><Icon name="lock" size={34} /></span><i /><i /></div>
-    <span className="eyebrow">Robinhood Chain receipt</span>
-    <h1>{confirmed ? <>Launch<br /><span>confirmed.</span></> : <>Launch status<br /><span>unverified.</span></>}</h1>
-    <p>{confirmed ? `Factory event confirms token ${confirmed.token}. The indexer and logo may still be syncing.` : verification}</p>
-    {confirmed ? <div className="success-contract glass-panel"><span className="eyebrow">Token contract address (CA)</span><code>{confirmed.token}</code><div className="success-contract-actions"><button className="button button-primary" onClick={() => void copyTokenAddress()}><Icon name="copy" size={15} /> Copy CA</button><a className="button button-outline" href={`${robinhoodMainnet.blockExplorers.default.url}/address/${confirmed.token}`} target="_blank" rel="noreferrer">View contract <Icon name="external" size={15} /></a></div></div> : null}
-    {confirmed ? <div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link><a className="button button-outline" href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View transaction</a></div> : null}
-    {confirmed ? <section className="success-metadata glass-panel" aria-label="Project metadata">
-      <span className="eyebrow">Project profile</span>
-      <h2>{metadataInfo.logoUrl ? "Logo saved" : metadataInfo.saved ? "Metadata saved; logo missing" : "Add your token logo"}</h2>
-      <p>{metadataInfo.logoUrl ? "The saved logo is available to Explore and the token page." : "No logo is saved for this token yet. Choose a PNG, JPG, or WebP image up to 512 KiB and save it with a creator wallet signature."}</p>
-      <input ref={logoInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void selectLogo(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-      <div className="success-metadata-actions"><button className="button button-outline" type="button" onClick={() => logoInputRef.current?.click()}>Choose logo</button>{draft.logoDataUrl ? <Image src={draft.logoDataUrl} width={48} height={48} unoptimized alt="Selected logo preview" /> : null}<span>{draft.logoName || (metadataInfo.logoUrl ? "Saved logo is active" : "No logo selected")}</span></div>
-      {showSaveButton ? <button className="button button-primary" disabled={metadataState === "saving"} onClick={() => void saveLogo()}>{metadataState === "saving" ? "Saving metadata..." : metadataInfo.saved ? "Save logo" : "Save project metadata"}</button> : null}
-      {metadataInfo.saved && !showSaveButton ? <p className="success-text" role="status">Project metadata saved{metadataInfo.logoUrl ? " with logo" : " without a logo"}.</p> : null}
+    <span className="eyebrow">SPLIT launch workflow</span>
+    <h1>{phase === "complete" ? <>LAUNCH<br /><span>COMPLETE</span></> : confirmed ? <>Complete<br /><span>your launch.</span></> : receiptReverted ? <>Launch<br /><span>failed.</span></> : <>Checking<br /><span>launch status.</span></>}</h1>
+    <p>{phase === "complete" ? "Your token and project profile are ready." : confirmed ? phase === "indexing" || phase === "checking" ? "Token deployed on Robinhood Chain. Waiting for the indexer before completing its project profile." : "Token deployed on Robinhood Chain. Complete the required creator signature to publish its project profile." : verification}</p>
+    {confirmed && phase === "complete" ? <><div className="success-contract glass-panel"><span className="eyebrow">Token contract address (CA)</span><code>{confirmed.token}</code><div className="success-contract-actions"><button className="button button-primary" onClick={() => void copyTokenAddress()}><Icon name="copy" size={15} /> Copy CA</button><a className="button button-outline" href={`${robinhoodMainnet.blockExplorers.default.url}/address/${confirmed.token}`} target="_blank" rel="noreferrer">View contract <Icon name="external" size={15} /></a></div></div><div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link></div></> : null}
+    {confirmed && phase !== "complete" ? <section className="success-metadata glass-panel" aria-label="Complete launch">
+      <span className="eyebrow">Final step</span>
+      <h2>{phase === "saving" ? "Saving project profile..." : phase === "indexing" || phase === "checking" ? "Indexing launch..." : "Complete launch"}</h2>
+      <p>Onchain token: <code>{confirmed.token}</code>. <a href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View confirmed transaction</a></p>
+      {draftMatchesLaunch ? <p>Your original launch draft is ready, including {draft.logoDataUrl ? `the selected logo (${draft.logoName || "image"})` : "the profile fields"}. It stays saved until this step succeeds.</p> : <p>The original draft is unavailable in this browser. Recover this already deployed token here; no second launch transaction is needed. Re-enter any missing profile fields and choose the original logo if you still have it.</p>}
+      {!draftMatchesLaunch ? <div className="form-grid"><label>Description<textarea maxLength={360} value={recoveryDraft.description} onChange={(event) => setRecoveryDraft((current) => ({ ...current, description: event.target.value }))} /></label>{(["website", "twitter", "telegram", "discord"] as const).map((field) => <label key={field}>{field}<input type="url" value={recoveryDraft[field]} onChange={(event) => setRecoveryDraft((current) => ({ ...current, [field]: event.target.value }))} placeholder="https://" /></label>)}</div> : null}
+      {!metadataDraft.logoDataUrl ? <><input ref={logoInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void selectLogo(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div className="success-metadata-actions"><button className="button button-outline" type="button" onClick={() => logoInputRef.current?.click()}>Choose logo</button><span>PNG, JPG or WebP, up to 512 KiB</span></div></> : <div className="success-metadata-actions"><Image src={metadataDraft.logoDataUrl} width={48} height={48} unoptimized alt="Launch logo preview" /><span>{metadataDraft.logoName || "Selected logo ready"}</span></div>}
+      {phase === "ready" ? <button className="button button-primary" type="button" disabled={!draftHydrated} onClick={() => void completionAction()}>{wallet.status === "wrong-network" ? "Switch to Robinhood Chain" : wallet.status !== "connected" ? "Connect creator wallet" : "Complete launch"}</button> : phase === "saving" ? <button className="button button-primary" disabled><span className="spinner" />Confirm creator signature in wallet</button> : phase === "error" ? <button className="button button-outline" type="button" onClick={() => { setPhase("checking"); setReadinessAttempt((value) => value + 1); }}>Retry readiness check</button> : <p role="status">Waiting for the canonical project record. This page will continue automatically.</p>}
       {logoError ? <p className="form-error" role="alert">{logoError}</p> : null}
-      {metadataInfo.error ? <p className="form-error" role="alert">{metadataInfo.error}</p> : null}
-      <small>A wallet signature is required; saving metadata does not send a chain transaction. Keep this draft until the save succeeds.</small>
+      {completionError ? <p className="form-error" role="alert">{completionError}</p> : null}
+      <small>The creator signature is required by the existing security policy. It does not send another chain transaction. Do not clear this draft before completion.</small>
     </section> : null}
-    <div className="success-actions"><button className="button button-outline" onClick={() => { resetDraft(); showToast("Launch draft cleared", "success"); }}>Clear draft</button></div>
+    {receiptReverted ? <button className="button button-outline" onClick={() => { if (draft.pendingLaunchTx) updateDraft({ pendingLaunchTx: "" }); router.push("/launch/review"); }}>Return to launch review</button> : null}
   </div></AppShell>;
 }

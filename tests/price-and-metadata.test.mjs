@@ -126,3 +126,15 @@ test("launch draft requires a fresh explicit ETH amount instead of restoring an 
   assert.equal(explicitDraft.initialLiquidity, "0.002");
   assert.equal(explicitDraft.initialLiquidityExplicit, true);
 });
+
+test("a submitted launch keeps its transaction reference and original logo across reloads", () => {
+  const hash = `0x${"a".repeat(64)}`;
+  const restored = drafts.restoreLaunchDraft(JSON.stringify({
+    name: "SPLIT E2E Test 01", symbol: "SPLITESE", pendingLaunchTx: hash,
+    logoName: "original.webp", logoDataUrl: "data:image/webp;base64,AAAA",
+  }));
+  assert.equal(restored.pendingLaunchTx, hash);
+  assert.equal(restored.logoName, "original.webp");
+  assert.equal(restored.logoDataUrl, "data:image/webp;base64,AAAA");
+  assert.equal(drafts.restoreLaunchDraft(JSON.stringify({ pendingLaunchTx: "0xwrong" })).pendingLaunchTx, "");
+});

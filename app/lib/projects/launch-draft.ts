@@ -9,6 +9,7 @@ export type LaunchDraft = {
   discord: string;
   logoName: string;
   logoDataUrl: string;
+  pendingLaunchTx: string;
   supply: string;
   initialLiquidity: string;
   initialLiquidityExplicit: boolean;
@@ -23,7 +24,7 @@ export type LaunchDraft = {
 export const DEFAULT_DRAFT: LaunchDraft = {
   resumeStep: "details",
   name: "", symbol: "", description: "", website: "", twitter: "", telegram: "", discord: "",
-  logoName: "", logoDataUrl: "", supply: "1000000000", initialLiquidity: "", initialLiquidityExplicit: false, tokenSeedAmount: "1000000",
+  logoName: "", logoDataUrl: "", pendingLaunchTx: "", supply: "1000000000", initialLiquidity: "", initialLiquidityExplicit: false, tokenSeedAmount: "1000000",
   feeRate: "1", quoteAsset: "ETH", projectTreasuryAddress: "", communityAddress: "",
   allocations: { creator: 40, liquidity: 30, projectTreasury: 20, community: 10 },
 };
@@ -45,6 +46,7 @@ export function restoreLaunchDraft(serialized: string): LaunchDraft {
     name: stringValue("name"), symbol: stringValue("symbol"), description: stringValue("description"),
     website: stringValue("website"), twitter: stringValue("twitter"), telegram: stringValue("telegram"),
     discord: stringValue("discord"), logoName: logoDataUrl ? stringValue("logoName") : "", logoDataUrl,
+    pendingLaunchTx: /^0x[0-9a-fA-F]{64}$/.test(stringValue("pendingLaunchTx")) ? stringValue("pendingLaunchTx") : "",
     supply: stringValue("supply"),
     initialLiquidity: parsed.initialLiquidityExplicit === true ? stringValue("initialLiquidity") : "",
     initialLiquidityExplicit: parsed.initialLiquidityExplicit === true,
