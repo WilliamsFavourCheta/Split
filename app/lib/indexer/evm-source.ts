@@ -24,8 +24,8 @@ export function getIndexerContracts() {
 const rpcUrl = process.env.SPLIT_INDEXER_RPC_URL || process.env.NEXT_PUBLIC_ROBINHOOD_MAINNET_RPC_URL || "https://rpc.mainnet.chain.robinhood.com";
 export const indexerClient = createPublicClient({ chain: robinhoodMainnet, transport: http(rpcUrl) });
 
-const robinhoodPoolManager = "0x8366a39cc670b4001a1121b8f6a443a643e40951" as Address;
-const poolSwapAbi = [{
+export const robinhoodPoolManager = "0x8366a39cc670b4001a1121b8f6a443a643e40951" as Address;
+export const poolSwapAbi = [{
   type: "event",
   name: "Swap",
   anonymous: false,
