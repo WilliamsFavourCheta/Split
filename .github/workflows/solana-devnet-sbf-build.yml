@@ -1,0 +1,144 @@
+name: Solana devnet SBF build
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: "Full 40-character commit SHA containing the reviewed Solana source"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      NO_DNA: "1"
+      EXPECTED_PROGRAM_ID: BhndJe2VyQ6HTqQZmcQYTHBGppQCm56vesBdBnu9RpXx
+      RUST_VERSION: 1.96.0
+      ANCHOR_VERSION: 0.31.1
+      SBF_BUILDER_VERSION: 4.2.0
+      PLATFORM_TOOLS_VERSION: v1.57
+      EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+
+    steps:
+      - name: Check out the selected commit
+        uses: actions/checkout@v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Verify exact source and program identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/logs
+          test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          python3 - <<'PY' | tee artifacts/logs/source-validation.log
+          import pathlib
+          import re
+          import tomllib
+
+          expected = "BhndJe2VyQ6HTqQZmcQYTHBGppQCm56vesBdBnu9RpXx"
+          root = pathlib.Path("solana-program")
+          anchor = tomllib.loads((root / "Anchor.toml").read_text())
+          source = (root / "programs/split_fee_router/src/lib.rs").read_text()
+          manifest = tomllib.loads((root / "programs/split_fee_router/Cargo.toml").read_text())
+          lock = tomllib.loads((root / "Cargo.lock").read_text())
+          assert anchor["programs"]["devnet"]["split_fee_router"] == expected
+          assert re.search(r'declare_id!\("' + expected + r'"\)', source)
+          assert manifest["dependencies"]["anchor-lang"] == "=0.31.2"
+          assert manifest["dependencies"]["anchor-spl"] == "=0.31.2"
+          versions = {p["name"]: p["version"] for p in lock["package"]}
+          assert versions["anchor-lang"] == versions["anchor-spl"] == "0.31.2"
+          print("Reviewed devnet program ID and pinned Anchor crates match:", expected)
+          PY
+          git rev-parse HEAD | tee artifacts/SOURCE_COMMIT.txt
+          sha256sum solana-program/Anchor.toml \
+            solana-program/Cargo.toml \
+            solana-program/Cargo.lock \
+            solana-program/programs/split_fee_router/Cargo.toml \
+            solana-program/programs/split_fee_router/src/lib.rs \
+            > artifacts/SOURCE_SHA256SUMS.txt
+
+      - name: Install pinned host Rust and Linux build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential clang cmake libclang-dev libssl-dev pkg-config
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          { rustc --version; cargo --version; } 2>&1 | tee artifacts/logs/rust-toolchain.log
+
+      - name: Install pinned Solana SBF compiler and Anchor CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-build-sbf --version "$SBF_BUILDER_VERSION" --locked 2>&1 | tee artifacts/logs/sbf-tool-install.log
+          cargo install anchor-cli --version "$ANCHOR_VERSION" --locked 2>&1 | tee artifacts/logs/anchor-install.log
+          { cargo build-sbf --version; anchor --version; } 2>&1 | tee artifacts/logs/tool-versions.log
+
+      - name: Run Rust tests and build the real SBF binary
+        working-directory: solana-program
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 --no-deps > /dev/null
+          cargo test --locked 2>&1 | tee ../artifacts/logs/rust-tests.log
+          cargo build-sbf --arch v3 --tools-version "$PLATFORM_TOOLS_VERSION" 2>&1 | tee ../artifacts/logs/sbf-build.log
+          test -s target/deploy/split_fee_router.so
+          cp target/deploy/split_fee_router.so ../artifacts/split_fee_router.so
+
+      - name: Generate Anchor IDL and validate build outputs
+        working-directory: solana-program
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/idl
+          anchor idl build --out target/idl/split_fee_router.json 2>&1 | tee ../artifacts/logs/idl-build.log
+          python3 - <<'PY' | tee ../artifacts/logs/output-validation.log
+          import json
+          import pathlib
+          import struct
+
+          expected = "BhndJe2VyQ6HTqQZmcQYTHBGppQCm56vesBdBnu9RpXx"
+          idl = json.loads(pathlib.Path("target/idl/split_fee_router.json").read_text())
+          binary = pathlib.Path("../artifacts/split_fee_router.so")
+          assert idl["address"] == expected
+          assert {"initialize_protocol", "register_project", "collect_platform_fee", "claim"} <= {
+              instruction["name"] for instruction in idl["instructions"]
+          }
+          header = binary.open("rb").read(64)
+          assert header[:6] == b"\x7fELF\x02\x01"  # 64-bit, little-endian ELF
+          assert struct.unpack_from("<H", header, 18)[0] == 247  # EM_BPF
+          assert struct.unpack_from("<I", header, 48)[0] == 3  # SBPFv3
+          assert binary.stat().st_size > 0
+          print("IDL address and instructions verified; SBF ELF bytes:", binary.stat().st_size)
+          PY
+          cp target/idl/split_fee_router.json ../artifacts/split_fee_router.json
+          file ../artifacts/split_fee_router.so | tee -a ../artifacts/logs/output-validation.log
+          readelf -h ../artifacts/split_fee_router.so | tee -a ../artifacts/logs/output-validation.log
+          git diff --exit-code -- Cargo.lock
+          stat -c '%s' ../artifacts/split_fee_router.so > ../artifacts/BINARY_SIZE_BYTES.txt
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'program_id=%s\n' "$EXPECTED_PROGRAM_ID"
+            printf 'rust=%s\n' "$RUST_VERSION"
+            printf 'anchor_cli=%s\n' "$ANCHOR_VERSION"
+            printf 'cargo_build_sbf=%s\n' "$SBF_BUILDER_VERSION"
+            printf 'platform_tools=%s\n' "$PLATFORM_TOOLS_VERSION"
+            printf 'sbf_arch=v3\n'
+          } > ../artifacts/BUILD_INFO.txt
+          (cd ../artifacts && sha256sum split_fee_router.so split_fee_router.json > SHA256SUMS.txt)
+
+      - name: Upload SBF, IDL, size, checksums, and build logs
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: split-solana-devnet-sbf-${{ github.sha }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
