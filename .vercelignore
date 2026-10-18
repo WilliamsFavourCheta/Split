@@ -1,0 +1,6 @@
+.env*
+.vercel
+.next
+node_modules
+artifacts/forge
+cache/forge

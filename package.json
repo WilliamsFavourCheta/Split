@@ -8,8 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:indexer": "node --test tests/indexer-remediation.test.mjs tests/price-and-metadata.test.mjs tests/metadata-remediation.test.mjs",
-    "contracts:build": "node_modules/@foundry-rs/forge-win32-amd64/bin/forge.exe build",
-    "contracts:test": "node_modules/@foundry-rs/forge-win32-amd64/bin/forge.exe test"
+    "contracts:build": "node scripts/run-forge.mjs build",
+    "contracts:test": "node scripts/run-forge.mjs test"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",

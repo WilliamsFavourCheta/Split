@@ -6,6 +6,7 @@ import { formatUnits, isAddress, zeroAddress } from "viem";
 import { splitHookAbi, splitLiquidityVaultAbi } from "../../contracts/abis";
 import { indexerClient, RH_MAINNET_CHAIN_ID } from "../indexer/evm-source";
 import { sqrtPriceX96ToEthPerToken } from "./price";
+import { summarizeFeeActivity } from "./token-display";
 
 export type ProjectListFilters = { query?: string; creatorAddress?: string; status?: ProjectStatus | "all"; limit?: number; offset?: number };
 export type IndexedProject = { id:string; chainId:number; tokenAddress:string; poolId:string|null; quoteAsset:string|null; creatorAddress:string; name:string; symbol:string; description:string; logoUrl?:string; website:string; twitter:string; telegram:string; discord:string; status:ProjectStatus; launchedAt:string|null; verified:boolean; split:Allocation[]; metrics?: { marketCapUsd:string|null; volume24hUsd:string|null; liquidityUsd:string|null; holderCount:number|null } };
@@ -103,7 +104,7 @@ export async function getProject(address: string) {
   // Do not select raw numeric(78,0) project/metric columns from base tables:
   // PostgREST serializes those as JSON numbers. Read financial raw values only
   // from the *_exact views, which cast them to decimal text in SQL.
-  const { data, error } = await client.from("projects").select("id,chain_id,token_address,pool_id,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("chain_id", RH_MAINNET_CHAIN_ID).eq("canonical", true).not("pool_id", "is", null).not("launch_tx_hash", "is", null).eq("token_address", normalizeAddress(address)).maybeSingle();
+  const { data, error } = await client.from("projects").select("id,chain_id,token_address,pool_id,creator_address,name,symbol,description,logo_url,website_url,x_url,telegram_url,discord_url,status,launched_at,launch_tx_hash,launch_block_number,verified,canonical,fee_configs(*),project_metrics(price_usd,market_cap_usd,volume_24h_usd,liquidity_usd,holder_count),project_metadata(*)").eq("chain_id", RH_MAINNET_CHAIN_ID).eq("canonical", true).not("pool_id", "is", null).not("launch_tx_hash", "is", null).eq("token_address", normalizeAddress(address)).maybeSingle();
   if (error) {
     if (isProtocolIndexMigrationMissing(error.message)) return null;
     throw new Error(`Could not load indexed project: ${error.message}`);
@@ -147,10 +148,13 @@ export async function getProjectToken(address: string): Promise<Token | null> {
     totalSupply: rawProject?.total_supply_raw ? formatUnits(BigInt(rawProject.total_supply_raw), 18) : undefined,
     initialSeedEth: rawProject?.seed_quote_amount_raw ? formatUnits(BigInt(rawProject.seed_quote_amount_raw), 18) : undefined,
     initialSeedTokens: rawProject?.seed_token_amount_raw ? formatUnits(BigInt(rawProject.seed_token_amount_raw), 18) : undefined,
+    launchBlock: project.launch_block_number ?? undefined,
+    launchTx: project.launch_tx_hash ?? undefined,
     launched: project.launched_at ? new Date(project.launched_at).toLocaleDateString() : "-",
     color: "#9b64ff",
     description: metadata?.description ?? project.description ?? "",
     logoUrl: metadata?.logo_url ?? project.logo_url ?? undefined,
+    metadataSaved: Boolean(metadata),
     website: metadata?.website_url ?? project.website_url ?? "",
     twitter: metadata?.x_url ?? project.x_url ?? "",
     telegram: metadata?.telegram_url ?? project.telegram_url ?? "",
@@ -219,6 +223,49 @@ export async function getProjectAccrualHistory(address: string, limit = 50, offs
   const { data, error } = await createServerSupabaseClient().from("fee_accrual_events_exact").select("*").eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending:false }).range(offset, offset + Math.min(limit, 100) - 1);
   if (error) throw new Error(`Could not load accrual events: ${error.message}`);
   return data;
+}
+
+/** Recent router events retain their actual currency and transaction; one flush can cover several trades. */
+export async function getProjectAllocationHistory(address: string, limit = 20) {
+  const project = await getProject(address);
+  if (!project) return [];
+  const { data, error } = await createServerSupabaseClient().from("fee_allocation_events_exact")
+    .select("id,tx_hash,block_number,block_timestamp,currency,gross_amount_raw,protocol_allocation_raw,creator_allocation_raw,liquidity_allocation_raw,project_treasury_allocation_raw,community_allocation_raw")
+    .eq("project_id", project.id).eq("canonical", true).order("block_number", { ascending: false }).limit(limit);
+  if (error) throw new Error(`Could not load fee allocations: ${error.message}`);
+  return data ?? [];
+}
+
+/** Full canonical event totals, kept separate by asset and exact decimal text. */
+export async function getProjectFeeActivity(address: string) {
+  const project = await getProject(address);
+  if (!project) return { trades: 0, assets: [] as ReturnType<typeof summarizeFeeActivity> };
+  const client = createServerSupabaseClient();
+  const accruals: Array<{ currency: string; rawAmount: string }> = [];
+  const allocations: Array<{ currency: string; rawAmount: string; protocol: string; creator: string; liquidity: string; treasury: string; community: string }> = [];
+  for (let offset = 0; ; offset += 1_000) {
+    const { data, error } = await client.from("fee_accrual_events_exact").select("currency,raw_amount")
+      .eq("project_id", project.id).eq("canonical", true).range(offset, offset + 999);
+    if (error) throw new Error(`Could not load accrued fee activity: ${error.message}`);
+    accruals.push(...(data ?? []).map((row) => ({ currency: row.currency, rawAmount: row.raw_amount })));
+    if (!data || data.length < 1_000) break;
+  }
+  for (let offset = 0; ; offset += 1_000) {
+    const { data, error } = await client.from("fee_allocation_events_exact")
+      .select("currency,gross_amount_raw,protocol_allocation_raw,creator_allocation_raw,liquidity_allocation_raw,project_treasury_allocation_raw,community_allocation_raw")
+      .eq("project_id", project.id).eq("canonical", true).range(offset, offset + 999);
+    if (error) throw new Error(`Could not load routed fee activity: ${error.message}`);
+    allocations.push(...(data ?? []).map((row) => ({
+      currency: row.currency, rawAmount: row.gross_amount_raw, protocol: row.protocol_allocation_raw,
+      creator: row.creator_allocation_raw, liquidity: row.liquidity_allocation_raw,
+      treasury: row.project_treasury_allocation_raw, community: row.community_allocation_raw,
+    })));
+    if (!data || data.length < 1_000) break;
+  }
+  const { count: trades, error: tradeError } = await client.from("project_price_events_exact")
+    .select("id", { count: "exact", head: true }).eq("project_id", project.id).eq("source", "swap");
+  if (tradeError) throw new Error(`Could not count canonical pool swaps: ${tradeError.message}`);
+  return { trades: trades ?? 0, assets: summarizeFeeActivity(accruals, allocations) };
 }
 
 export async function getDashboardProjects(walletAddress: string) { return getProjects({ creatorAddress: normalizeAddress(walletAddress), limit:100 }); }
@@ -301,7 +348,7 @@ export async function getDashboardFinancials(walletAddress: string) {
   for (let offset = 0; ; offset += 1_000) {
     const { data, error } = await client.from("fee_allocation_events_exact").select("currency,gross_amount_raw,protocol_allocation_raw,creator_allocation_raw,project_treasury_allocation_raw,community_allocation_raw,liquidity_allocation_raw").in("project_id", projectIds).eq("canonical", true).range(offset, offset + 999);
     if (error) {
-      if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, indexed: false };
+      if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, protocolLaunchFeeClaims, indexed: false };
       throw new Error(`Could not load allocated fee totals: ${error.message}`);
     }
     allocatedRows.push(...(data ?? []));
@@ -311,7 +358,7 @@ export async function getDashboardFinancials(walletAddress: string) {
   for (let offset = 0; ; offset += 1_000) {
     const { data, error } = await client.from("fee_claim_events_exact").select("currency,raw_amount").eq("recipient_address", normalizeAddress(walletAddress)).eq("canonical", true).range(offset, offset + 999);
     if (error) {
-      if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, indexed: false };
+      if (isProtocolIndexMigrationMissing(error.message)) return { projects, claimTargets, accrued: [], unrouted: null, allocated: [], claimed: [], liquidityReserved: null, protocolLaunchFeeClaims, indexed: false };
       throw new Error(`Could not load claimed fee totals: ${error.message}`);
     }
     claimedRows.push(...(data ?? []));

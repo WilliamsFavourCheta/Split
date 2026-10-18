@@ -17,10 +17,13 @@ export type Token = {
   totalSupply?: string;
   initialSeedEth?: string;
   initialSeedTokens?: string;
+  launchBlock?: number;
+  launchTx?: string;
   launched: string;
   color: string;
   description: string;
   logoUrl?: string;
+  metadataSaved?: boolean;
   website: string;
   twitter: string;
   telegram: string;

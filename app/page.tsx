@@ -4,6 +4,14 @@ import { getProjectTokens } from "./lib/projects/repository";
 
 export default async function Home() {
   await connection();
-  const { tokens } = await getProjectTokens({ limit: 4 });
-  return <HomePage tokens={tokens} />;
+  let tokens: Awaited<ReturnType<typeof getProjectTokens>>["tokens"] = [];
+  let dataUnavailable = true;
+  try {
+    const result = await getProjectTokens({ limit: 4 });
+    tokens = result.tokens;
+    dataUnavailable = result.source !== "supabase";
+  } catch (error) {
+    console.error("SPLIT home launch feed failed", error);
+  }
+  return <HomePage tokens={tokens} dataUnavailable={dataUnavailable} />;
 }

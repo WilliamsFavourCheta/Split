@@ -89,7 +89,9 @@ export async function runIndexerBatch() {
   const startBlock = BigInt(positiveInteger(process.env.SPLIT_INDEXER_START_BLOCK, 1, "SPLIT_INDEXER_START_BLOCK"));
   const finality = BigInt(positiveInteger(process.env.SPLIT_INDEXER_FINALITY_BLOCKS, 64, "SPLIT_INDEXER_FINALITY_BLOCKS"));
   const reorgWindow = BigInt(positiveInteger(process.env.SPLIT_INDEXER_REORG_WINDOW, 128, "SPLIT_INDEXER_REORG_WINDOW"));
-  const batchSize = BigInt(Math.min(positiveInteger(process.env.SPLIT_INDEXER_BATCH_BLOCKS, 500, "SPLIT_INDEXER_BATCH_BLOCKS"), 2_000));
+  // The configured RPC accepts at most 100,000 blocks per log request. Wider
+  // windows let a stale index catch up without skipping any canonical events.
+  const batchSize = BigInt(Math.min(positiveInteger(process.env.SPLIT_INDEXER_BATCH_BLOCKS, 100_000, "SPLIT_INDEXER_BATCH_BLOCKS"), 100_000));
   const head = await indexerClient.getBlockNumber();
   if (head <= finality) return { chainId: RH_MAINNET_CHAIN_ID, indexedThrough: null, events: 0, status: "waiting-for-finality" as const };
   const finalizedHead = head - finality;
@@ -129,6 +131,11 @@ export async function runIndexerBatch() {
         };
       }
     }
+  }
+  // The checkpoint hash was verified above. With no newer finalized block,
+  // replaying the same reorg window cannot discover any new chain state.
+  if (!deepReorgRolledBack && checkpoint && BigInt(checkpoint.last_processed_block) >= finalizedHead) {
+    return { chainId: RH_MAINNET_CHAIN_ID, indexedThrough: checkpoint.last_processed_block, events: 0, status: "current" as const };
   }
   if (from > to) return { chainId: RH_MAINNET_CHAIN_ID, indexedThrough: Number(to), events: 0, status: "current" as const };
 

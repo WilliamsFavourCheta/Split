@@ -23,7 +23,7 @@ type ClaimTarget = { poolId: `0x${string}`; tokenAddress: Address; name: string;
 type DashboardData = { projects: Token[]; claimTargets: ClaimTarget[]; accrued: BalanceGroup[]; unrouted: BalanceGroup[] | null; allocated: BalanceGroup[]; claimed: BalanceGroup[]; liquidityReserved: Array<{ currency: string; rawAmount: string }> | null; protocolLaunchFeeClaims: Array<{ id: string; txHash: string; blockNumber: number; rawAmount: string }>; indexed: boolean };
 
 function useDashboardData(address: string | null | undefined) {
-  const [result, setResult] = useState<{ address: string | null; data: DashboardData | null }>({ address: null, data: null });
+  const [result, setResult] = useState<{ address: string | null; data: DashboardData | null; error: boolean }>({ address: null, data: null, error: false });
   useEffect(() => {
     if (address == null) return;
     let active = true;
@@ -32,11 +32,11 @@ function useDashboardData(address: string | null | undefined) {
         if (!response.ok) throw new Error("Could not load account data.");
         return response.json() as Promise<DashboardData>;
       })
-      .then((data) => { if (active) setResult({ address, data }); })
-      .catch(() => { if (active) setResult({ address, data: null }); });
+      .then((data) => { if (active) setResult({ address, data, error: false }); })
+      .catch(() => { if (active) setResult({ address, data: null, error: true }); });
     return () => { active = false; };
   }, [address]);
-  return address != null && result.address === address ? result.data : null;
+  return address != null && result.address === address ? result : { address, data: null, error: false };
 }
 
 function currencyLabel(currency: string, projects: Token[]) {
@@ -79,6 +79,10 @@ function StatCard({ label, value, icon, action }: { label: string; value: string
   return <div className="stat-card glass-panel"><div><span>{label}</span><Icon name={icon} /></div><strong>{value}</strong>{action}</div>;
 }
 
+function DashboardLoadError() {
+  return <div className="empty-state glass-panel" role="alert"><p>Dashboard data could not be loaded. Check the data service and indexer, then refresh this page.</p></div>;
+}
+
 function RealLaunchTable({ tokens }: { tokens: Token[] }) {
   if (!tokens.length) return <div className="empty-state glass-panel"><p>No launches from this connected wallet are indexed.</p></div>;
   return <div className="launch-table glass-panel"><div className="launch-table-head"><span>Token</span><span>Status</span><span>Market cap</span><span>Volume</span><span>Fee split</span><span>Creator allocation</span><span>Actions</span></div>{tokens.map((token) => <div className="launch-table-row" key={token.address}><div className="table-token"><span className="token-glyph" style={{ "--token-color": token.color } as React.CSSProperties}>{token.ticker[0]}{token.logoUrl ? <Image className="token-logo-image" src={token.logoUrl} width={42} height={42} unoptimized alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} /> : null}</span><span><strong>{token.name}</strong><small>${token.ticker}</small></span></div><StatusBadge status={token.status} /><span data-label="Market cap">{token.marketCap}</span><span data-label="Volume">{token.volume}</span><span data-label="Fee split">{token.split.map((item) => item.value).join(" / ")}</span><span className="allocation-label" data-label="Creator allocation">{token.split.find((item) => item.key === "creator")?.value ?? 0}% creator</span><div className="table-actions"><Link href={`/manage/${token.address}`}>Manage</Link><Link href={`/token/${token.address}`}>View</Link></div></div>)}</div>;
@@ -86,25 +90,26 @@ function RealLaunchTable({ tokens }: { tokens: Token[] }) {
 
 export function RealDashboardOverview() {
   const wallet = useWallet();
-  const data = useDashboardData(wallet.address);
+  const { data, error } = useDashboardData(wallet.address);
   const projects = data?.projects ?? [];
   const reserved = data?.liquidityReserved?.map((item) => `${formatUnits(BigInt(item.rawAmount), 18)} ${currencyLabel(item.currency, projects)}`).join("  /  ") || "-";
-  return <DashboardFrame active="overview"><section className="stat-grid"><StatCard label="Indexed launches" value={data ? String(projects.length) : "Loading..."} icon="layers" /><StatCard label="Fees accrued  /  indexed" value={data ? groupedAmounts(data.accrued, projects) : "Loading..."} icon="chart" /><StatCard label="Fees allocated  /  indexed" value={data ? groupedAmounts(data.allocated, projects) : "Loading..."} icon="wallet" /><StatCard label="Liquidity reserved  /  live vault read" value={data?.liquidityReserved ? reserved : "Not configured"} icon="bars" /></section><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Canonical onchain launches</span><h2>Your launches</h2></div><Link href="/dashboard/launches">View all <Icon name="external" /></Link></div>{data?.indexed ? <RealLaunchTable tokens={projects} /> : <div className="empty-state glass-panel"><p>Indexed portfolio data is unavailable until Supabase and the verified-contract indexer are configured.</p></div>}</section></DashboardFrame>;
+  return <DashboardFrame active="overview">{error ? <DashboardLoadError /> : null}<section className="stat-grid"><StatCard label="Indexed launches" value={data ? String(projects.length) : error ? "Unavailable" : "Loading..."} icon="layers" /><StatCard label="Fees accrued  /  indexed" value={data ? groupedAmounts(data.accrued, projects) : error ? "Unavailable" : "Loading..."} icon="chart" /><StatCard label="Fees allocated  /  indexed" value={data ? groupedAmounts(data.allocated, projects) : error ? "Unavailable" : "Loading..."} icon="wallet" /><StatCard label="Liquidity reserved  /  live vault read" value={data?.liquidityReserved ? reserved : error ? "Unavailable" : "Not configured"} icon="bars" /></section><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Canonical onchain launches</span><h2>Your launches</h2></div><Link href="/dashboard/launches">View all <Icon name="external" /></Link></div>{data?.indexed ? <RealLaunchTable tokens={projects} /> : !error ? <div className="empty-state glass-panel"><p>Indexed portfolio data is unavailable until Supabase and the verified-contract indexer are configured.</p></div> : null}</section></DashboardFrame>;
 }
 
 export function RealDashboardLaunches() {
   const wallet = useWallet();
-  const data = useDashboardData(wallet.address);
-  return <DashboardFrame active="launches"><section className="dashboard-section standalone"><div className="section-heading"><div><span className="eyebrow">Portfolio</span><h2>My launches</h2><p>Projects owned by the connected wallet.</p></div><Link className="button button-primary" href="/launch/details">New launch <Icon name="arrow" /></Link></div>{data?.indexed ? <RealLaunchTable tokens={data.projects} /> : <div className="empty-state glass-panel"><p>Portfolio query is unavailable until the indexer is configured.</p></div>}</section></DashboardFrame>;
+  const { data, error } = useDashboardData(wallet.address);
+  return <DashboardFrame active="launches">{error ? <DashboardLoadError /> : null}<section className="dashboard-section standalone"><div className="section-heading"><div><span className="eyebrow">Portfolio</span><h2>My launches</h2><p>Projects owned by the connected wallet.</p></div><Link className="button button-primary" href="/launch/details">New launch <Icon name="arrow" /></Link></div>{data?.indexed ? <RealLaunchTable tokens={data.projects} /> : !error ? <div className="empty-state glass-panel"><p>Portfolio query is unavailable until the indexer is configured.</p></div> : null}</section></DashboardFrame>;
 }
 
 export function RealDashboardFees() {
   const wallet = useWallet();
-  const data = useDashboardData(wallet.address);
+  const { data, error } = useDashboardData(wallet.address);
   const projects = data?.projects ?? [];
   const reserved = data?.liquidityReserved?.map((item) => `${formatUnits(BigInt(item.rawAmount), 18)} ${currencyLabel(item.currency, projects)}`).join("  /  ") || "0";
   const launchClaimTotal = data?.protocolLaunchFeeClaims.reduce((total, row) => total + BigInt(row.rawAmount), BigInt(0)) ?? BigInt(0);
-  return <DashboardFrame active="fees"><section className="stat-grid"><StatCard label="Fees accrued  /  indexed" value={data ? groupedAmounts(data.accrued, projects) : "Loading..."} icon="chart" /><StatCard label="Fees allocated  /  indexed" value={data ? groupedAmounts(data.allocated, projects) : "Loading..."} icon="layers" /><StatCard label="Claimed  /  indexed history" value={data ? groupedAmounts(data.claimed, projects) : "Loading..."} icon="wallet" /><StatCard label="Protocol launch fees claimed  /  ETH" value={data ? formatUnits(launchClaimTotal, 18) : "Loading..."} icon="wallet" /></section><ClaimableFees targets={data?.claimTargets ?? []} /><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Protocol Treasury history</span><h2>Launch-fee claims</h2><p>Canonical ProtocolLaunchFeesClaimed logs indexed from the router.</p></div></div>{data?.protocolLaunchFeeClaims.length ? <div className="history-list">{data.protocolLaunchFeeClaims.map((row) => <div className="history-row" key={row.id}><span className="history-icon"><Icon name="wallet" /></span><strong>{formatUnits(BigInt(row.rawAmount), 18)} ETH</strong><span className="history-arrow">→</span><strong>Protocol Treasury</strong><small>Block {row.blockNumber}</small><a href={explorerTx(row.txHash)} target="_blank" rel="noreferrer">View tx <Icon name="external" size={12} /></a></div>)}</div> : <div className="empty-state glass-panel"><p>No canonical Protocol Treasury launch-fee claims have been indexed for this wallet.</p></div>}</section><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Liquidity accounting</span><h2>Liquidity reserved</h2></div></div><div className="glass-panel analytics-breakdown"><p>Pending liquidity is read from the SPLIT vault on Robinhood Chain. It is not claimable and is not creator income.</p><strong>{data?.liquidityReserved ? reserved : "Vault address not configured"}</strong><p>Supabase shows indexed history only. Claimable values are read directly from the router.</p></div></section>{!data?.indexed ? <div className="empty-state glass-panel"><p>Fee analytics appear after Supabase and the verified-contract indexer are configured.</p></div> : null}</DashboardFrame>;
+  const fallback = error ? "Unavailable" : "Loading...";
+  return <DashboardFrame active="fees">{error ? <DashboardLoadError /> : null}<section className="stat-grid"><StatCard label="Fees accrued  /  indexed" value={data ? groupedAmounts(data.accrued, projects) : fallback} icon="chart" /><StatCard label="Fees allocated  /  indexed" value={data ? groupedAmounts(data.allocated, projects) : fallback} icon="layers" /><StatCard label="Claimed  /  indexed history" value={data ? groupedAmounts(data.claimed, projects) : fallback} icon="wallet" /><StatCard label="Protocol launch fees claimed  /  ETH" value={data ? formatUnits(launchClaimTotal, 18) : fallback} icon="wallet" /></section><ClaimableFees targets={data?.claimTargets ?? []} /><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Protocol Treasury history</span><h2>Launch-fee claims</h2><p>Canonical ProtocolLaunchFeesClaimed logs indexed from the router.</p></div></div>{data?.protocolLaunchFeeClaims.length ? <div className="history-list">{data.protocolLaunchFeeClaims.map((row) => <div className="history-row" key={row.id}><span className="history-icon"><Icon name="wallet" /></span><strong>{formatUnits(BigInt(row.rawAmount), 18)} ETH</strong><span className="history-arrow">→</span><strong>Protocol Treasury</strong><small>Block {row.blockNumber}</small><a href={explorerTx(row.txHash)} target="_blank" rel="noreferrer">View tx <Icon name="external" size={12} /></a></div>)}</div> : <div className="empty-state glass-panel"><p>No canonical Protocol Treasury launch-fee claims have been indexed for this wallet.</p></div>}</section><section className="dashboard-section"><div className="section-heading"><div><span className="eyebrow">Liquidity accounting</span><h2>Liquidity reserved</h2></div></div><div className="glass-panel analytics-breakdown"><p>Pending liquidity is read from the SPLIT vault on Robinhood Chain. It is not claimable and is not creator income.</p><strong>{data?.liquidityReserved ? reserved : error ? "Unavailable" : "Vault address not configured"}</strong><p>Supabase shows indexed history only. Claimable values are read directly from the router.</p></div></section>{!data?.indexed ? <div className="empty-state glass-panel"><p>Fee analytics appear after Supabase and the verified-contract indexer are configured.</p></div> : null}</DashboardFrame>;
 }
 
 function ClaimableFees({ targets }: { targets: ClaimTarget[] }) {

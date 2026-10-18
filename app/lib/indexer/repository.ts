@@ -229,6 +229,7 @@ export async function saveIndexerCheckpoint(chainId: number, contractAddress: st
     contract_address: normalizedAddress,
     last_processed_block: lastProcessedBlock,
     last_processed_block_hash: lastProcessedBlockHash.toLowerCase(),
+    updated_at: new Date().toISOString(),
   }, { onConflict: "chain_id,contract_address" });
   if (error) throw new Error(`Indexer checkpoint update failed: ${error.message}`);
 }

@@ -12,6 +12,7 @@ async function loadPureModule(path) {
 }
 
 const price = await loadPureModule("../app/lib/projects/price.ts");
+const tokenDisplay = await loadPureModule("../app/lib/projects/token-display.ts");
 const metadata = await loadPureModule("../app/lib/projects/metadata-signing.ts");
 const image = await loadPureModule("../app/lib/projects/image-validation.ts");
 const drafts = await loadPureModule("../app/lib/projects/launch-draft.ts");
@@ -76,6 +77,52 @@ test("chart period selection handles zero, one, and many canonical observations"
   ];
   assert.equal(price.selectPriceSnapshots(many, "1D").length, 2);
   assert.equal(price.selectPriceSnapshots(many, "ALL").length, 3);
+});
+
+test("token terminal formats canonical launch amounts and very small prices without inventing values", () => {
+  assert.equal(tokenDisplay.formatTokenQuantity("1000000000", "SPLITESE"), "1.00B SPLITESE");
+  assert.equal(tokenDisplay.formatTokenQuantity("1000000.00001", "SPLITESE"), "1.00M SPLITESE");
+  assert.equal(tokenDisplay.formatTokenQuantity(undefined, "SPLITESE"), "—");
+  assert.equal(tokenDisplay.formatEthPrice(1e-9), "0.000000001 ETH");
+  assert.equal(tokenDisplay.formatEthPrice(null), "—");
+  assert.equal(tokenDisplay.formatEthAmount("0.001"), "0.001 ETH");
+});
+
+test("fee activity preserves ETH and token units and distinguishes accrual from routing", () => {
+  const eth = "0x0000000000000000000000000000000000000000";
+  const token = "0x1234000000000000000000000000000000000000";
+  assert.deepEqual(tokenDisplay.summarizeFeeActivity([], []), []);
+  const totals = tokenDisplay.summarizeFeeActivity([
+    { currency: eth, rawAmount: "10" }, { currency: token, rawAmount: "100" },
+  ], [{ currency: token, rawAmount: "50", protocol: "5", creator: "18", liquidity: "14", treasury: "9", community: "4" }]);
+  assert.equal(totals.length, 2);
+  assert.deepEqual(totals.find((item) => item.currency === eth), { currency: eth, accrued: "10", routed: "0", protocol: "0", creator: "0", liquidity: "0", treasury: "0", community: "0" });
+  assert.equal(totals.find((item) => item.currency === token)?.routed, "50");
+  assert.equal(totals.find((item) => item.currency === token)?.creator, "18");
+});
+
+test("only matching connected project recipients get role labels and shared wallets show each role", () => {
+  const roles = [{ label: "Creator", address: "0xAbc" }, { label: "Project Treasury", address: "0xabc" }, { label: "Community", address: "0xdef" }];
+  assert.deepEqual(tokenDisplay.matchingProjectRoles(undefined, roles), []);
+  assert.deepEqual(tokenDisplay.matchingProjectRoles("0xABC", roles), ["Creator", "Project Treasury"]);
+  assert.deepEqual(tokenDisplay.matchingProjectRoles("0xdef", roles), ["Community"]);
+  assert.deepEqual(tokenDisplay.matchingProjectRoles("0x999", roles), []);
+});
+
+test("only the connected creator can recover missing metadata without launching again", () => {
+  const tx = `0x${"a".repeat(64)}`;
+  const path = `/launch/success?tx=${tx}`;
+  assert.equal(tokenDisplay.projectCompletionPath("0xAbC", "0xabc", false, tx), path);
+  assert.equal(tokenDisplay.projectCompletionPath("0xAbC", undefined, false, tx), null);
+  assert.equal(tokenDisplay.projectCompletionPath("0xAbC", "0xdef", false, tx), null);
+  assert.equal(tokenDisplay.projectCompletionPath("0xAbC", "0xabc", true, tx), null);
+  assert.equal(tokenDisplay.projectCompletionPath("0xAbC", "0xabc", false, undefined), null);
+});
+
+test("protocol treasury controls require the onchain treasury identity", () => {
+  assert.equal(tokenDisplay.isProtocolTreasury("0xAbC", "0xabc"), true);
+  assert.equal(tokenDisplay.isProtocolTreasury(undefined, "0xabc"), false);
+  assert.equal(tokenDisplay.isProtocolTreasury("0xdef", "0xabc"), false);
 });
 
 test("metadata signature binds token, image, fields, and expiry", () => {
