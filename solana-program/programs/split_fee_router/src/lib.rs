@@ -5,8 +5,8 @@ use anchor_lang::solana_program::program::invoke_signed;
 use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-// Development ID only. Replace with the deployed program address before integration.
-declare_id!("Fg6PaFpoGXkYsidMpWxTWqkZzZuyhzCf81xbj2dH7Jf");
+// Devnet program identity; deployment uses the matching local keypair.
+declare_id!("BhndJe2VyQ6HTqQZmcQYTHBGppQCm56vesBdBnu9RpXx");
 
 const BPS: u128 = 10_000;
 const PROTOCOL_BPS: u128 = 1_000;

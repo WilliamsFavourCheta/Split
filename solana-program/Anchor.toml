@@ -5,10 +5,12 @@ anchor_version = "0.31.1"
 resolution = true
 
 [programs.devnet]
-split_fee_router = "Fg6PaFpoGXkYsidMpWxTWqkZzZuyhzCf81xbj2dH7Jf"
+split_fee_router = "BhndJe2VyQ6HTqQZmcQYTHBGppQCm56vesBdBnu9RpXx"
 
 [provider]
 cluster = "devnet"
+# Development-only deployment signer. The key is outside the repository.
+wallet = "C:/Users/HP/AppData/Local/SPLIT/devnet/upgrade-and-deploy-authority-keypair.json"
 
 [workspace]
 members = ["programs/*"]
