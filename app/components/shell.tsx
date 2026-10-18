@@ -95,9 +95,7 @@ export function AppFooter() {
         <a href="https://docs.robinhood.com/chain/" target="_blank" rel="noreferrer">Chain docs <Icon name="external" size={12} /></a>
       </nav>
       <div className="footer-socials">
-        <a href="https://x.com" target="_blank" rel="noreferrer" aria-label="SPLIT on X"><Icon name="twitter" size={14} /></a>
-        <a href="https://t.me" target="_blank" rel="noreferrer" aria-label="SPLIT on Telegram"><Icon name="telegram" size={14} /></a>
-        <a href="https://discord.com" target="_blank" rel="noreferrer" aria-label="SPLIT on Discord"><Icon name="discord" size={14} /></a>
+        <a href="https://x.com/launchonsplit" target="_blank" rel="noreferrer" aria-label="SPLIT on X"><Icon name="twitter" size={14} /></a>
       </div>
     </footer>
   );
