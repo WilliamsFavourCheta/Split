@@ -22,6 +22,9 @@
 /artifacts/forge/
 /cache/forge/
 /cache/
+/solana-program/target/
+/solana-program/.anchor/
+*-keypair.json
 
 # misc
 .DS_Store

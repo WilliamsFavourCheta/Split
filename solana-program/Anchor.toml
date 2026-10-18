@@ -1,0 +1,14 @@
+[toolchain]
+anchor_version = "0.31.1"
+
+[features]
+resolution = true
+
+[programs.devnet]
+split_fee_router = "Fg6PaFpoGXkYsidMpWxTWqkZzZuyhzCf81xbj2dH7Jf"
+
+[provider]
+cluster = "devnet"
+
+[workspace]
+members = ["programs/*"]
