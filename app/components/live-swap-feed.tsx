@@ -5,7 +5,7 @@ import { formatUnits } from "viem";
 import { explorerTx } from "../data/mock";
 import { Icon } from "./icons";
 
-type Swap = {
+export type LiveSwap = {
   txHash: string;
   logIndex: number;
   blockNumber: number;
@@ -13,8 +13,9 @@ type Swap = {
   direction: "buy" | "sell";
   ethAmountRaw: string;
   tokenAmountRaw: string;
+  sqrtPriceX96: string;
 };
-type LiveResponse = { swaps: Swap[]; throughBlock: number | null };
+type LiveResponse = { swaps: LiveSwap[]; throughBlock: number | null };
 
 function compactAmount(raw: string) {
   const value = Number(formatUnits(BigInt(raw), 18));
@@ -23,7 +24,7 @@ function compactAmount(raw: string) {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(value);
 }
 
-export function LiveSwapFeed({ address, ticker }: { address: string; ticker: string }) {
+export function LiveSwapFeed({ address, ticker, onSwaps }: { address: string; ticker: string; onSwaps?: (swaps: LiveSwap[]) => void }) {
   const [data, setData] = useState<LiveResponse | null>(null);
   const [error, setError] = useState(false);
 
@@ -38,7 +39,7 @@ export function LiveSwapFeed({ address, ticker }: { address: string; ticker: str
         const response = await fetch(`/api/tokens/${address}/live`, { signal: controller.signal, cache: "no-store" });
         if (!response.ok) throw new Error("Recent swaps unavailable");
         const next = await response.json() as LiveResponse;
-        if (active) { setData(next); setError(false); }
+        if (active) { setData(next); setError(false); onSwaps?.(next.swaps); }
       } catch (cause) {
         if (active && !(cause instanceof DOMException && cause.name === "AbortError")) setError(true);
       }
@@ -52,7 +53,7 @@ export function LiveSwapFeed({ address, ticker }: { address: string; ticker: str
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", refresh);
     };
-  }, [address]);
+  }, [address, onSwaps]);
 
   return <section className="terminal-live-feed" aria-label="Recent official pool swaps">
     <div className="terminal-section-title"><span className="eyebrow">Official pool activity</span><h2>Recent swaps</h2><p>Finalized Robinhood Chain swaps, checked every 30 seconds while this page is open.</p></div>

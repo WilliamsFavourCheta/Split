@@ -170,7 +170,7 @@ export async function getProjectPriceHistory(address: string) {
   if (!project) return { status: "ready" as const, snapshots: [] as Array<{ priceEth: number; snapshotAt: string }> };
   const { data, error } = await createServerSupabaseClient()
     .from("project_price_events_exact")
-    .select("sqrt_price_x96,block_timestamp,block_number,log_index")
+    .select("sqrt_price_x96,block_timestamp,block_number,log_index,tx_hash")
     .eq("project_id", project.id)
     .eq("chain_id", project.chain_id)
     .order("block_number", { ascending: false })
@@ -184,7 +184,7 @@ export async function getProjectPriceHistory(address: string) {
     if (!row.block_timestamp) return [];
     const priceEth = sqrtPriceX96ToEthPerToken(row.sqrt_price_x96);
     return priceEth !== null
-      ? [{ priceEth, snapshotAt: row.block_timestamp }]
+      ? [{ priceEth, snapshotAt: row.block_timestamp, eventId: `${row.tx_hash}:${row.log_index}`, blockNumber: row.block_number, logIndex: row.log_index }]
       : [];
   });
   return { status: "ready" as const, snapshots: snapshots.reverse() };

@@ -79,6 +79,35 @@ test("chart period selection handles zero, one, and many canonical observations"
   assert.equal(price.selectPriceSnapshots(many, "ALL").length, 3);
 });
 
+test("chart carries the last pool price forward and changes only when a new swap price arrives", () => {
+  const now = Date.parse("2026-10-18T12:00:00Z");
+  const events = [
+    { priceEth: 1e-9, snapshotAt: "2026-10-17T00:00:00Z" },
+    { priceEth: 2e-9, snapshotAt: "2026-10-18T06:00:00Z" },
+  ];
+  const points = price.buildChartSeries(events, [], "1D", "priceEth", now);
+  assert.equal(points[0].value, 1e-9);
+  assert.equal(points[0].snapshotAt, "2026-10-17T12:00:00.000Z");
+  assert.equal(points[1].value, 2e-9);
+  assert.equal(points.at(-1).value, 2e-9);
+});
+
+test("USD chart applies historical ETH/USD at each timestamp instead of today's rate", () => {
+  const now = Date.parse("2026-10-18T12:00:00Z");
+  const events = [
+    { priceEth: 1e-9, snapshotAt: "2026-10-18T08:00:00Z" },
+    { priceEth: 2e-9, snapshotAt: "2026-10-18T10:00:00Z" },
+  ];
+  const quotes = [
+    { priceUsd: 2000, snapshotAt: "2026-10-18T08:00:00Z" },
+    { priceUsd: 2200, snapshotAt: "2026-10-18T09:00:00Z" },
+    { priceUsd: 2300, snapshotAt: "2026-10-18T11:00:00Z" },
+  ];
+  const points = price.buildChartSeries(events, quotes, "1D", "marketCapUsd", now);
+  assert.deepEqual(points.map((point) => point.value), [2000, 2200, 4400, 4600, 4600]);
+  assert.equal(price.buildChartSeries(events, [], "1D", "priceUsd", now).length, 0);
+});
+
 test("token terminal formats canonical launch amounts and very small prices without inventing values", () => {
   assert.equal(tokenDisplay.formatTokenQuantity("1000000000", "SPLITESE"), "1.00B SPLITESE");
   assert.equal(tokenDisplay.formatTokenQuantity("1000000.00001", "SPLITESE"), "1.00M SPLITESE");

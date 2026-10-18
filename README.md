@@ -11,6 +11,8 @@
 
 The repository layer is in `app/lib/projects/repository.ts`; chain event interfaces and idempotent persistence are in `app/lib/indexer/`. Project metadata writes use a creator wallet signature bound to the token, image hash, all profile fields, and a five-minute expiry. The server verifies the canonical indexed project and the factory's official pool mapping before using its server-only service-role key to upload to the existing `project-assets` bucket and update `project_metadata`. Browser clients cannot write financial index tables.
 
+Token charts combine indexed official-pool prices with recent finalized swaps while the page is open. Viewers can switch between token price and fixed-supply fully diluted market cap, in ETH or indicative USD. Historical ETH/USD samples come from DefiLlama through the server-only `/api/market/eth-usd` proxy and are matched to each chart timestamp; if that provider is unavailable, ETH views remain available. The chart is not a circulating-supply market cap or an execution quote.
+
 ## EVM wallet setup
 
 Wallet configuration uses Wagmi, Viem, and TanStack Query. Configure the existing `.env` file directly; choose `NEXT_PUBLIC_TARGET_CHAIN_ID=46630` for Robinhood Chain Testnet or `4663` for mainnet. Public RPC URLs can be overridden with `NEXT_PUBLIC_ROBINHOOD_TESTNET_RPC_URL` and `NEXT_PUBLIC_ROBINHOOD_MAINNET_RPC_URL`. These public variables are inlined during `next build`, so rebuild after changing them. Leave the factory address variables blank until deployment.

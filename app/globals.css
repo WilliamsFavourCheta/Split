@@ -383,6 +383,7 @@ html[data-motion="reduced"] .reveal { opacity:1;transform:none; }
 .preview-token-glyph { position:relative;overflow:hidden; }
 .preview-token-glyph img { position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit; }
 .token-price-chart { margin-top:24px;padding:26px;border:1px solid var(--line);background:linear-gradient(180deg,rgba(25,12,43,.88),rgba(11,5,19,.8)); }
+.chart-mode-tabs { display:flex;flex-wrap:wrap;gap:6px;margin-bottom:20px; }.chart-mode-tabs button { min-height:36px;padding:6px 10px;border:1px solid var(--line);background:rgba(92,45,151,.09);color:var(--muted);font-size:10px;font-weight:700;cursor:pointer; }.chart-mode-tabs button.active { border-color:var(--purple);background:rgba(138,76,226,.2);color:var(--ink); }.chart-mode-tabs button:disabled { opacity:.45;cursor:not-allowed; }.chart-mode-tabs button:not(:disabled):hover { border-color:var(--purple-soft); }
 .token-chart-head { display:flex;justify-content:space-between;align-items:center;gap:24px; }
 .token-chart-head > div:first-child { display:grid;gap:8px; }
 .token-chart-head > div:first-child > strong { font-size:clamp(26px,4vw,42px);letter-spacing:-.055em; }
@@ -399,6 +400,7 @@ html[data-motion="reduced"] .reveal { opacity:1;transform:none; }
 .token-chart-empty .eyebrow { color:var(--purple-soft); }
 .token-chart-empty p { max-width:480px;color:var(--muted);font-size:12px;line-height:1.7; }
 .token-chart-source { display:block;margin-top:8px; }
+.token-chart-source a { color:var(--purple-soft);text-decoration:underline;text-underline-offset:2px; }
 @media (max-width: 600px) { .token-price-chart { padding:18px 14px; }.token-chart-head { align-items:flex-start;flex-direction:column;gap:12px; }.token-chart-frame,.token-chart-empty { height:270px;min-height:270px; }.token-chart-tooltip { max-width:90%;overflow:hidden;text-overflow:ellipsis; }.upload-dropzone { padding:14px; } }
 .token-card > a { padding-bottom:0; }
 .token-card-actions { margin-top:0;padding:0 24px 24px; }
