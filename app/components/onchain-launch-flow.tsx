@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConnection, usePublicClient, useWalletClient } from "wagmi";
 import { decodeEventLog, formatEther, isAddress, isHash, parseEther, zeroHash } from "viem";
 import { getSplitFactoryAddress, productionLaunchEnabled } from "../contracts/addresses";
@@ -275,6 +275,7 @@ export function OnchainLaunchSuccessPage() {
   const { data: walletClient } = useWalletClient();
   const logoInputRef = useRef<HTMLInputElement>(null);
   const completionInFlight = useRef(false);
+  const autoCompletionAttempted = useRef<string | null>(null);
   const [confirmed, setConfirmed] = useState<{ token: `0x${string}`; hash: `0x${string}`; creator: `0x${string}`; name: string; symbol: string } | null>(null);
   const [verification, setVerification] = useState("Checking the Robinhood Chain launch transaction...");
   const [receiptReverted, setReceiptReverted] = useState(false);
@@ -370,7 +371,7 @@ export function OnchainLaunchSuccessPage() {
     }
   };
 
-  const completeLaunch = async () => {
+  const completeLaunch = useCallback(async () => {
     if (!confirmed || phase !== "ready" || !draftHydrated || completionInFlight.current) return;
     if (!walletClient || !wallet.address || wallet.status !== "connected" || wallet.address.toLowerCase() !== confirmed.creator.toLowerCase()) {
       setCompletionError("Connect the original creator wallet on Robinhood Chain to complete this launch.");
@@ -391,7 +392,15 @@ export function OnchainLaunchSuccessPage() {
     } finally {
       completionInFlight.current = false;
     }
-  };
+  }, [confirmed, phase, draftHydrated, walletClient, wallet.address, wallet.status, metadataDraft, showToast]);
+
+  useEffect(() => {
+    if (phase !== "ready" || !confirmed || !draftMatchesLaunch || !draftHydrated || !walletClient
+      || wallet.status !== "connected" || wallet.address?.toLowerCase() !== confirmed.creator.toLowerCase()
+      || autoCompletionAttempted.current === confirmed.token) return;
+    autoCompletionAttempted.current = confirmed.token;
+    void completeLaunch();
+  }, [phase, confirmed, draftMatchesLaunch, draftHydrated, walletClient, wallet.status, wallet.address, completeLaunch]);
 
   const completionAction = async () => {
     if (wallet.status === "wrong-network") { await wallet.switchNetwork(); return; }
@@ -403,16 +412,16 @@ export function OnchainLaunchSuccessPage() {
     <div className="success-orbit"><span><Icon name="lock" size={34} /></span><i /><i /></div>
     <span className="eyebrow">SPLIT launch workflow</span>
     <h1>{phase === "complete" ? <>LAUNCH<br /><span>COMPLETE</span></> : confirmed ? <>Complete<br /><span>your launch.</span></> : receiptReverted ? <>Launch<br /><span>failed.</span></> : <>Checking<br /><span>launch status.</span></>}</h1>
-    <p>{phase === "complete" ? "Your token and project profile are ready." : confirmed ? phase === "indexing" || phase === "checking" ? "Token deployed on Robinhood Chain. Waiting for the indexer before completing its project profile." : "Token deployed on Robinhood Chain. Complete the required creator signature to publish its project profile." : verification}</p>
+    <p>{phase === "complete" ? "Your token and project profile are ready." : confirmed ? phase === "indexing" || phase === "checking" ? "Token deployed on Robinhood Chain. Waiting for the indexer before completing its project profile." : draftMatchesLaunch ? "Token deployed on Robinhood Chain. Your saved draft is being published; approve the creator signature in your wallet." : "Token deployed on Robinhood Chain. Connect the original creator wallet to publish its project profile." : verification}</p>
     {confirmed && phase === "complete" ? <><div className="success-contract glass-panel"><span className="eyebrow">Token contract address (CA)</span><code>{confirmed.token}</code><div className="success-contract-actions"><button className="button button-primary" onClick={() => void copyTokenAddress()}><Icon name="copy" size={15} /> Copy CA</button><a className="button button-outline" href={`${robinhoodMainnet.blockExplorers.default.url}/address/${confirmed.token}`} target="_blank" rel="noreferrer">View contract <Icon name="external" size={15} /></a></div></div><div className="success-actions"><Link className="button button-primary" href={`/token/${confirmed.token}`}>View token</Link></div></> : null}
     {confirmed && phase !== "complete" ? <section className="success-metadata glass-panel" aria-label="Complete launch">
       <span className="eyebrow">Final step</span>
-      <h2>{phase === "saving" ? "Saving project profile..." : phase === "indexing" || phase === "checking" ? "Indexing launch..." : "Complete launch"}</h2>
+      <h2>{phase === "saving" ? "Approve profile signature in wallet" : phase === "indexing" || phase === "checking" ? "Indexing launch..." : "Complete launch"}</h2>
       <p>Onchain token: <code>{confirmed.token}</code>. <a href={getTransactionExplorerUrl(confirmed.hash, 4663)} target="_blank" rel="noreferrer">View confirmed transaction</a></p>
       {draftMatchesLaunch ? <p>Your original launch draft is ready, including {draft.logoDataUrl ? `the selected logo (${draft.logoName || "image"})` : "the profile fields"}. It stays saved until this step succeeds.</p> : <p>The original draft is unavailable in this browser. Recover this already deployed token here; no second launch transaction is needed. Re-enter any missing profile fields and choose the original logo if you still have it.</p>}
       {!draftMatchesLaunch ? <div className="form-grid"><label>Description<textarea maxLength={360} value={recoveryDraft.description} onChange={(event) => setRecoveryDraft((current) => ({ ...current, description: event.target.value }))} /></label>{(["website", "twitter", "telegram", "discord"] as const).map((field) => <label key={field}>{field}<input type="url" value={recoveryDraft[field]} onChange={(event) => setRecoveryDraft((current) => ({ ...current, [field]: event.target.value }))} placeholder="https://" /></label>)}</div> : null}
       {!metadataDraft.logoDataUrl ? <><input ref={logoInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void selectLogo(event.target.files?.[0]); event.currentTarget.value = ""; }} /><div className="success-metadata-actions"><button className="button button-outline" type="button" onClick={() => logoInputRef.current?.click()}>Choose logo</button><span>PNG, JPG or WebP, up to 512 KiB</span></div></> : <div className="success-metadata-actions"><Image src={metadataDraft.logoDataUrl} width={48} height={48} unoptimized alt="Launch logo preview" /><span>{metadataDraft.logoName || "Selected logo ready"}</span></div>}
-      {phase === "ready" ? <button className="button button-primary" type="button" disabled={!draftHydrated} onClick={() => void completionAction()}>{wallet.status === "wrong-network" ? "Switch to Robinhood Chain" : wallet.status !== "connected" ? "Connect creator wallet" : "Complete launch"}</button> : phase === "saving" ? <button className="button button-primary" disabled><span className="spinner" />Confirm creator signature in wallet</button> : phase === "error" ? <button className="button button-outline" type="button" onClick={() => { setPhase("checking"); setReadinessAttempt((value) => value + 1); }}>Retry readiness check</button> : <p role="status">Waiting for the canonical project record. This page will continue automatically.</p>}
+      {phase === "ready" ? <button className="button button-primary" type="button" disabled={!draftHydrated} onClick={() => void completionAction()}>{wallet.status === "wrong-network" ? "Switch to Robinhood Chain" : wallet.status !== "connected" ? "Connect creator wallet" : draftMatchesLaunch ? "Retry profile signature" : "Complete launch"}</button> : phase === "saving" ? <button className="button button-primary" disabled><span className="spinner" />Confirm creator signature in wallet</button> : phase === "error" ? <button className="button button-outline" type="button" onClick={() => { setPhase("checking"); setReadinessAttempt((value) => value + 1); }}>Retry readiness check</button> : <p role="status">Waiting for the canonical project record. This page will continue automatically.</p>}
       {logoError ? <p className="form-error" role="alert">{logoError}</p> : null}
       {completionError ? <p className="form-error" role="alert">{completionError}</p> : null}
       <small>The creator signature is required by the existing security policy. It does not send another chain transaction. Do not clear this draft before completion.</small>

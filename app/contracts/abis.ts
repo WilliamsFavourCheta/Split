@@ -204,6 +204,16 @@ export const splitFeeRouterAbi = [
 export const splitHookAbi = [
   {
     type: "function",
+    name: "flush",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "poolId", type: "bytes32" },
+      { name: "currency", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
     name: "accrued",
     stateMutability: "view",
     inputs: [

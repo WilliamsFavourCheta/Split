@@ -11,6 +11,8 @@
 
 The repository layer is in `app/lib/projects/repository.ts`; chain event interfaces and idempotent persistence are in `app/lib/indexer/`. Project metadata writes use a creator wallet signature bound to the token, image hash, all profile fields, and a five-minute expiry. The server verifies the canonical indexed project and the factory's official pool mapping before using its server-only service-role key to upload to the existing `project-assets` bucket and update `project_metadata`. Browser clients cannot write financial index tables.
 
+After a confirmed launch is indexed, the success page automatically requests the creator's profile signature when the original draft and wallet are available, then saves the profile. A declined signature leaves the draft intact for retry. On `/dashboard/fees`, eligible recipients can route accrued hook fees for each asset and then claim their router balance. Routing and claiming are separate onchain transactions; a successful claim transfers ETH or tokens directly to the connected recipient wallet. Liquidity allocations remain in SplitVault.
+
 Token charts combine indexed official-pool prices with recent finalized swaps while the page is open. Viewers can switch between token price and fixed-supply fully diluted market cap, in ETH or indicative USD. Historical ETH/USD samples come from DefiLlama through the server-only `/api/market/eth-usd` proxy and are matched to each chart timestamp; if that provider is unavailable, ETH views remain available. The chart is not a circulating-supply market cap or an execution quote.
 
 ## EVM wallet setup

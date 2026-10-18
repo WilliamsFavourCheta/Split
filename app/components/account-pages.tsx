@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { formatUnits, type Address } from "viem";
+import { formatUnits, zeroAddress, type Address } from "viem";
 import { useReadContract, useWaitForTransactionReceipt, useWalletClient, useWriteContract } from "wagmi";
 import { EXPLORER_URL, explorerTx, shortAddress, type Token } from "../data/mock";
 import { Icon } from "./icons";
@@ -13,8 +13,8 @@ import { AppShell, CopyButton, StatusBadge, WalletActionButton } from "./shell";
 import { FlowDiagram } from "./visuals";
 import { Erc20BalanceLookup } from "./erc20-balance-lookup";
 import { targetChainId } from "../web3/chains";
-import { splitFeeRouterAbi } from "../contracts/abis";
-import { splitFeeRouterAddresses } from "../contracts/addresses";
+import { splitFeeRouterAbi, splitHookAbi } from "../contracts/abis";
+import { splitFeeRouterAddresses, splitHookAddresses } from "../contracts/addresses";
 import { uploadConfirmedProjectMetadata } from "../lib/projects/upload-metadata";
 
 type DashboardTab = "overview" | "launches" | "fees";
@@ -159,7 +159,27 @@ function ClaimableProject({ target, router }: { target: ClaimTarget; router: Add
     ...(protocolTreasuryRead.data ? [{ label: "Protocol Treasury", address: protocolTreasuryRead.data, protocol: true }] : []),
   ].filter((role) => role.address.toLowerCase() === wallet.address?.toLowerCase());
   if (roles.length === 0) return null;
-  return <article className="glass-panel claimable-project"><div className="claimable-project-head"><strong>{target.name} <span>${target.symbol}</span></strong><small>Pool {shortAddress(target.poolId, 10, 6)}</small></div>{roles.map((role) => <div className="claimable-recipient" key={role.label}><span>Claimable {role.label} Fees</span><div><ClaimCurrency router={router} poolId={target.poolId} currency="0x0000000000000000000000000000000000000000" currencyName="ETH" role={role.label} protocol={role.protocol} /><ClaimCurrency router={router} poolId={target.poolId} currency={target.tokenAddress} currencyName={`$${target.symbol}`} role={role.label} protocol={role.protocol} /></div></div>)}</article>;
+  return <article className="glass-panel claimable-project"><div className="claimable-project-head"><strong>{target.name} <span>${target.symbol}</span></strong><small>Pool {shortAddress(target.poolId, 10, 6)}</small></div><p>Swap fees accrue before they can be claimed. If fees are waiting, route them first; this requires a network transaction. Then claim your share to this connected wallet.</p><RouteAccruedFees poolId={target.poolId} currency={zeroAddress} currencyName="ETH" /><RouteAccruedFees poolId={target.poolId} currency={target.tokenAddress} currencyName={`$${target.symbol}`} />{roles.map((role) => <div className="claimable-recipient" key={role.label}><span>Claimable {role.label} Fees</span><div><ClaimCurrency router={router} poolId={target.poolId} currency={zeroAddress} currencyName="ETH" role={role.label} protocol={role.protocol} /><ClaimCurrency router={router} poolId={target.poolId} currency={target.tokenAddress} currencyName={`$${target.symbol}`} role={role.label} protocol={role.protocol} /></div></div>)}</article>;
+}
+
+function RouteAccruedFees({ poolId, currency, currencyName }: { poolId: `0x${string}`; currency: Address; currencyName: string }) {
+  const wallet = useWallet();
+  const hook = splitHookAddresses[targetChainId as 4663 | 46630];
+  const accrued = useReadContract({ address: hook, abi: splitHookAbi, functionName: "accrued", args: [poolId, currency], chainId: targetChainId, query: { enabled: Boolean(hook), refetchInterval: 15_000 } });
+  const writer = useWriteContract();
+  const receipt = useWaitForTransactionReceipt({ hash: writer.data, chainId: targetChainId });
+  const refetchAccrued = accrued.refetch;
+  useEffect(() => { if (receipt.isSuccess) void refetchAccrued(); }, [receipt.isSuccess, refetchAccrued]);
+  if (!hook) return null;
+  const amount = accrued.data ?? BigInt(0);
+  const pending = writer.isPending || receipt.isLoading;
+  const route = async () => {
+    if (!wallet.address || wallet.status !== "connected" || amount === BigInt(0) || pending) return;
+    try {
+      await writer.writeContractAsync({ address: hook, abi: splitHookAbi, functionName: "flush", args: [poolId, currency], account: wallet.address, chainId: targetChainId });
+    } catch { /* The transaction error is shown below. */ }
+  };
+  return <div className="claimable-currency"><span>Waiting to route · {currencyName}</span><strong>{accrued.isError ? "Unavailable" : accrued.data === undefined ? "Loading..." : formatUnits(amount, 18)}</strong><button className="button button-outline" disabled={accrued.data === undefined || amount === BigInt(0) || pending || wallet.status !== "connected"} onClick={() => void route()}>{pending ? "Routing..." : amount > BigInt(0) ? `Route ${currencyName} fees` : "No fees to route"}</button>{receipt.isSuccess ? <small>Routed onchain. Claimable balances refresh shortly.</small> : null}{accrued.error || writer.error || receipt.error ? <small className="error-text">{accrued.error?.message || writer.error?.message || receipt.error?.message}</small> : null}</div>;
 }
 
 function ClaimCurrency({ router, poolId, currency, currencyName, role, protocol = false }: { router: Address; poolId: `0x${string}`; currency: Address; currencyName: string; role: string; protocol?: boolean }) {
