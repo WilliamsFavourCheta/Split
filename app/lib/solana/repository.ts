@@ -10,7 +10,7 @@ export type SolanaProjectRecord = {
   name: string;
   symbol: string;
   decimals: number;
-  status: "curve" | "graduated";
+  status: "curve" | "bonded" | "graduated";
   launched_at: string | null;
   creator_bps: number;
   liquidity_bps: number;
@@ -37,7 +37,7 @@ export type SolanaTradeRecord = {
 const isProject = (row: SolanaProjectRecord) =>
   isSolanaAddress(row.mint_address) && isSolanaAddress(row.pool_address)
   && isSolanaAddress(row.creator_address)
-  && (row.status === "curve" || row.status === "graduated")
+  && (row.status === "curve" || row.status === "bonded" || row.status === "graduated")
   && typeof row.name === "string" && typeof row.symbol === "string";
 
 export async function getSolanaProjects() {

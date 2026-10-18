@@ -19,9 +19,13 @@ The `declare_id!` value and Anchor.toml program address are development placehol
 
 Proposed public deployment addresses supplied by the project owner: Raydium PlatformConfig admin `9FAqrQLSbX8Sz6wu1u3QovunR3jFgWa2RfvQpJXFAUBu`; 10% protocol treasury `HSrCeMpFh5VnApPRPHJvDPTxUEdM7hQi5DhAMqWDcasn`. Both decode to 32-byte Solana public keys. Ownership/control and the ability of the treasury to hold and claim WSOL still require a signed devnet verification. These addresses do not authorize a transaction by themselves.
 
+The read-only `verifySolanaLaunch` gate derives the Raydium PlatformConfig PDA from the supplied admin and checks the SPLIT protocol treasury against the supplied 10% wallet. At one finalized RPC context it checks the registered project, Raydium pool, protocol, and PlatformConfig owners and discriminators, mint and creator binding, immutable share total, CPMM migration type, 1% platform fee rate, zero separate creator fee, and SPLIT's fee-wallet PDA. It does not persist a project row yet. Raydium's admin can update its PlatformConfig after launch; the indexer and claim UI must continue to detect changes, not assume this initial verification remains true forever.
+
 `supabase/migrations/202610180001_solana_launchpad.sql` defines separate case-sensitive Solana project, trade, fee, price, and cursor tables. It has not been applied to the hosted Supabase project. The indexer must use finalized slots and write with the service role; browser users have read-only access to finalized public records.
 
 `/solana/explore` and `/solana/token/[mint]` read those tables and show a finalized trade list plus a USD price/market-cap chart. The indexer must derive each historical USD sample using the SOL/USD rate and circulating supply valid at that sample's slot. These pages show an unavailable/empty state until the migration and indexer are active. They do not manufacture chart motion from a clock or current SOL/USD price. The on-chain claim UI and trading controls remain to be built.
+
+Raydium's current migration description subtracts the accrued `platform_fee` from the quote amount moved to CPMM, leaving that fee in the LaunchLab quote vault. Its per-pool `ClaimPlatformFee` drains the pool's recorded `platform_fee`. This suggests the per-project claim path can still collect pre-graduation accrual after migration, but the branch has not validated it with a live Raydium program and must not count CPMM trading fees as continuing SPLIT revenue. See the [Raydium launch instructions](https://github.com/raydium-io/raydium-docs-v1/blob/main/products/launchlab/instructions.mdx).
 
 ## Launch gates
 

@@ -1,5 +1,6 @@
 import { getAssociatedTokenAddressSync, NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { PublicKey } from "@solana/web3.js";
+import { getPdaPlatformId } from "@raydium-io/raydium-sdk-v2";
 import { solanaCluster } from "./client";
 
 // Raydium documents separate LaunchLab deployments for each cluster.
@@ -10,6 +11,8 @@ export const RAYDIUM_LAUNCHPAD_PROGRAM = new PublicKey(
 );
 
 const seed = (value: string) => new TextEncoder().encode(value);
+export const SPLIT_PLATFORM_ADMIN = new PublicKey("9FAqrQLSbX8Sz6wu1u3QovunR3jFgWa2RfvQpJXFAUBu");
+export const SPLIT_PROTOCOL_TREASURY = new PublicKey("HSrCeMpFh5VnApPRPHJvDPTxUEdM7hQi5DhAMqWDcasn");
 
 export function getSolanaDeploymentConfig() {
   const programId = process.env.NEXT_PUBLIC_SPLIT_SOLANA_PROGRAM_ID;
@@ -18,7 +21,8 @@ export function getSolanaDeploymentConfig() {
   try {
     const router = new PublicKey(programId);
     const platform = new PublicKey(platformConfig);
-    if (router.equals(PublicKey.default) || platform.equals(PublicKey.default)) return null;
+    if (router.equals(PublicKey.default) || platform.equals(PublicKey.default)
+      || !platform.equals(getPdaPlatformId(RAYDIUM_LAUNCHPAD_PROGRAM, SPLIT_PLATFORM_ADMIN).publicKey)) return null;
     return { router, platform, raydium: RAYDIUM_LAUNCHPAD_PROGRAM };
   } catch {
     return null;

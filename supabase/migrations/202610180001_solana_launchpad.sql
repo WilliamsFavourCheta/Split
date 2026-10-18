@@ -20,7 +20,7 @@ create table public.solana_projects (
   liquidity_bps integer not null check (liquidity_bps between 0 and 10000),
   treasury_bps integer not null check (treasury_bps between 0 and 10000),
   community_bps integer not null check (community_bps between 0 and 10000),
-  status text not null check (status in ('pending', 'curve', 'graduated', 'failed')),
+  status text not null check (status in ('pending', 'curve', 'bonded', 'graduated', 'failed')),
   registration_signature text,
   launch_signature text,
   graduation_signature text,
