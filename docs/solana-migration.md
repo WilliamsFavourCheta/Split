@@ -13,9 +13,15 @@ Status: implementation in progress on `feature/solana-launchpad`. The existing R
 
 ## On-chain work in this branch
 
-`solana-program/programs/split_fee_router` establishes immutable per-mint recipients and splits, a dedicated WSOL vault, exact integer allocation, and recipient claims. Registration is restricted to the program's upgrade-authority-initialized platform authority and the creator plus fresh mint signer. The protocol treasury is set once by the upgrade authority. Rounding dust belongs to liquidity, matching the Robinhood Chain router. Tokens sent into the vault can be allocated, but a direct vault transfer is not proof that a Raydium fee was claimed. The Raydium claim CPI and authenticated pool binding are required before any launch or fee reporting goes live.
+`solana-program/programs/split_fee_router` establishes immutable per-mint recipients and splits, a dedicated WSOL vault, exact integer allocation, and recipient claims. Registration is restricted to the upgrade-authority-initialized platform authority and the creator plus fresh mint signer. The platform authority, protocol treasury, Raydium program, and platform config are set once by the upgrade authority. Rounding dust belongs to liquidity, matching the Robinhood Chain router. The claim instruction derives the project's Raydium pool PDA, invokes Raydium's per-pool `ClaimPlatformFee` with SPLIT's fee-wallet PDA, transfers only the WSOL received in that CPI to the project's vault, and allocates it atomically. Direct vault transfers are ignored. This CPI needs local validator tests against the actual Raydium deployment before launch or fee reporting goes live. The fee-wallet WSOL associated token account must exist before the first claim.
 
 The `declare_id!` value and Anchor.toml program address are development placeholders. Deploy a unique, controlled program ID and sync them before any cluster deployment. No mainnet program or platform configuration has been deployed by this branch.
+
+Proposed public deployment addresses supplied by the project owner: Raydium PlatformConfig admin and SPLIT registration authority `9FAqrQLSbX8Sz6wu1u3QovunR3jFgWa2RfvQpJXFAUBu`; 10% protocol treasury `HSrCeMpFh5VnApPRPHJvDPTxUEdM7hQi5DhAMqWDcasn`. Both decode to 32-byte Solana public keys. Ownership/control and the ability of the treasury to hold and claim WSOL still require a signed devnet verification. These addresses do not authorize a transaction by themselves.
+
+`supabase/migrations/202610180001_solana_launchpad.sql` defines separate case-sensitive Solana project, trade, fee, price, and cursor tables. It has not been applied to the hosted Supabase project. The indexer must use finalized slots and write with the service role; browser users have read-only access to finalized public records.
+
+`/solana/explore` and `/solana/token/[mint]` read those tables and show a finalized trade list plus a USD price/market-cap chart. The indexer must derive each historical USD sample using the SOL/USD rate and circulating supply valid at that sample's slot. These pages show an unavailable/empty state until the migration and indexer are active. They do not manufacture chart motion from a clock or current SOL/USD price. The on-chain claim UI and trading controls remain to be built.
 
 ## Launch gates
 

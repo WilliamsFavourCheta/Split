@@ -483,3 +483,25 @@ html[data-motion="reduced"] .reveal { opacity:1;transform:none; }
 .solana-form-review { display:flex; flex-direction:column; gap:6px; padding:16px; border:1px solid var(--line); }
 .solana-form-errors { margin:0; padding-left:20px; color:#ff8a9e; font-size:12px; }
 @media(max-width:900px) { .solana-launch-grid { grid-template-columns:1fr; } }
+.solana-project-list { display:grid; gap:12px; max-width:900px; }
+.solana-project-row { display:flex; justify-content:space-between; align-items:center; gap:20px; padding:20px 24px; color:var(--ink); }
+.solana-project-row span:first-child { display:grid; gap:4px; }
+.solana-project-row small,.solana-project-mint { color:var(--muted); font-size:12px; }
+.solana-token-page h1 { overflow-wrap:anywhere; }
+.solana-symbol { color:var(--purple-soft); }
+.solana-token-grid { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(280px,1fr); gap:20px; margin:30px 0 20px; }
+.solana-market-panel { padding:24px; min-width:0; }
+.solana-market-panel h2 { margin:6px 0 14px; }
+.solana-market-panel p { margin:0 0 14px; overflow-wrap:anywhere; }
+.solana-market-panel small { color:var(--muted); line-height:1.5; }
+.solana-market-heading { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; }
+.solana-chart-modes { display:flex; gap:6px; }
+.solana-chart-modes button { padding:8px 10px; border:1px solid var(--line); background:transparent; color:var(--muted); cursor:pointer; font-size:12px; }
+.solana-chart-modes button[aria-pressed="true"] { color:var(--ink); border-color:var(--purple); background:rgba(139,92,255,.14); }
+.solana-chart-value { display:block; font-size:clamp(22px,3vw,38px); margin:14px 0; }
+.solana-chart { display:block; width:100%; height:220px; color:var(--purple-soft); margin:8px 0 18px; }
+.solana-trade-list { display:grid; }
+.solana-trade-row { display:grid; grid-template-columns:70px 1fr 1fr 170px; gap:12px; align-items:center; padding:12px 0; border-top:1px solid var(--line); font-size:13px; }
+.solana-trade-row strong { color:var(--purple-soft); }
+@media(max-width:800px) { .solana-token-grid { grid-template-columns:1fr; } .solana-trade-row { grid-template-columns:55px 1fr 1fr; } .solana-trade-row small { grid-column:2/-1; } }
+@media(max-width:540px) { .solana-project-row { align-items:flex-start; flex-direction:column; } }

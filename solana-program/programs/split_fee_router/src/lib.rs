@@ -1,5 +1,8 @@
 use crate::program::SplitFeeRouter;
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use anchor_lang::solana_program::program::invoke_signed;
+use anchor_spl::associated_token::get_associated_token_address;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 // Development ID only. Replace with the deployed program address before integration.
@@ -7,6 +10,7 @@ declare_id!("Fg6PaFpoGXkYsidMpWxTWqkZzZuyhzCf81xbj2dH7Jf");
 
 const BPS: u128 = 10_000;
 const PROTOCOL_BPS: u128 = 1_000;
+const RAYDIUM_CLAIM_PLATFORM_FEE: [u8; 8] = [156, 39, 208, 135, 76, 237, 61, 72];
 
 #[program]
 pub mod split_fee_router {
@@ -14,14 +18,21 @@ pub mod split_fee_router {
 
     pub fn initialize_protocol(
         ctx: Context<InitializeProtocol>,
+        platform_authority: Pubkey,
         protocol_treasury: Pubkey,
     ) -> Result<()> {
+        require!(
+            platform_authority != Pubkey::default(),
+            SplitError::InvalidRecipient
+        );
         require!(
             protocol_treasury != Pubkey::default(),
             SplitError::InvalidRecipient
         );
-        ctx.accounts.protocol.authority = ctx.accounts.upgrade_authority.key();
+        ctx.accounts.protocol.authority = platform_authority;
         ctx.accounts.protocol.treasury = protocol_treasury;
+        ctx.accounts.protocol.raydium_program = ctx.accounts.raydium_program.key();
+        ctx.accounts.protocol.platform_config = ctx.accounts.platform_config.key();
         Ok(())
     }
 
@@ -52,24 +63,75 @@ pub mod split_fee_router {
         Ok(())
     }
 
-    // Accounts tokens already present in the project's dedicated quote vault.
-    // The Raydium claim CPI must precede this instruction in the finished launch flow.
-    pub fn allocate_available(ctx: Context<AllocateAvailable>) -> Result<()> {
-        let project = &mut ctx.accounts.project;
-        let outstanding = project.outstanding()?;
+    pub fn collect_platform_fee(ctx: Context<CollectPlatformFee>) -> Result<()> {
+        let before = ctx.accounts.fee_wallet_tokens.amount;
+        let fee_wallet_key = ctx.accounts.fee_wallet.key();
+        let claim = Instruction {
+            program_id: ctx.accounts.raydium_program.key(),
+            accounts: vec![
+                AccountMeta::new(fee_wallet_key, true),
+                AccountMeta::new_readonly(ctx.accounts.raydium_authority.key(), false),
+                AccountMeta::new(ctx.accounts.pool_state.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.platform_config.key(), false),
+                AccountMeta::new(ctx.accounts.quote_vault.key(), false),
+                AccountMeta::new(ctx.accounts.fee_wallet_tokens.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.quote_mint.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.token_program.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.system_program.key(), false),
+                AccountMeta::new_readonly(ctx.accounts.associated_token_program.key(), false),
+            ],
+            data: RAYDIUM_CLAIM_PLATFORM_FEE.to_vec(),
+        };
+        let signer_seeds: &[&[u8]] = &[b"fee_wallet", &[ctx.bumps.fee_wallet]];
+        invoke_signed(
+            &claim,
+            &[
+                ctx.accounts.fee_wallet.to_account_info(),
+                ctx.accounts.raydium_authority.to_account_info(),
+                ctx.accounts.pool_state.to_account_info(),
+                ctx.accounts.platform_config.to_account_info(),
+                ctx.accounts.quote_vault.to_account_info(),
+                ctx.accounts.fee_wallet_tokens.to_account_info(),
+                ctx.accounts.quote_mint.to_account_info(),
+                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.system_program.to_account_info(),
+                ctx.accounts.associated_token_program.to_account_info(),
+                ctx.accounts.raydium_program.to_account_info(),
+            ],
+            &[signer_seeds],
+        )?;
+        ctx.accounts.fee_wallet_tokens.reload()?;
         let gross = ctx
             .accounts
-            .vault
+            .fee_wallet_tokens
             .amount
-            .checked_sub(outstanding)
+            .checked_sub(before)
             .ok_or(SplitError::VaultUnderfunded)?;
         require!(gross > 0, SplitError::NoNewFees);
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.fee_wallet_tokens.to_account_info(),
+                    to: ctx.accounts.vault.to_account_info(),
+                    authority: ctx.accounts.fee_wallet.to_account_info(),
+                },
+                &[signer_seeds],
+            ),
+            gross,
+        )?;
+        ctx.accounts.vault.reload()?;
+        let project = &mut ctx.accounts.project;
         let allocation = allocate(gross, project.shares)?;
         project.protocol_pending = add(project.protocol_pending, allocation.protocol)?;
         project.creator_pending = add(project.creator_pending, allocation.creator)?;
         project.treasury_pending = add(project.treasury_pending, allocation.project_treasury)?;
         project.community_pending = add(project.community_pending, allocation.community)?;
         project.liquidity_locked = add(project.liquidity_locked, allocation.liquidity)?;
+        require!(
+            ctx.accounts.vault.amount >= project.outstanding()?,
+            SplitError::VaultUnderfunded
+        );
         emit!(FeesAllocated {
             mint: project.mint,
             gross,
@@ -133,6 +195,12 @@ pub struct InitializeProtocol<'info> {
     pub program_data: Account<'info, ProgramData>,
     #[account(init, payer = upgrade_authority, space = 8 + Protocol::INIT_SPACE, seeds = [b"protocol"], bump)]
     pub protocol: Account<'info, Protocol>,
+    /// CHECK: The configured Raydium program must be executable.
+    #[account(constraint = raydium_program.executable)]
+    pub raydium_program: UncheckedAccount<'info>,
+    /// CHECK: The configured Raydium program must own this account.
+    #[account(owner = raydium_program.key())]
+    pub platform_config: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
@@ -167,14 +235,43 @@ pub struct RegisterProject<'info> {
 pub struct Protocol {
     pub authority: Pubkey,
     pub treasury: Pubkey,
+    pub raydium_program: Pubkey,
+    pub platform_config: Pubkey,
 }
 
 #[derive(Accounts)]
-pub struct AllocateAvailable<'info> {
+pub struct CollectPlatformFee<'info> {
+    #[account(seeds = [b"protocol"], bump)]
+    pub protocol: Account<'info, Protocol>,
     #[account(mut, seeds = [b"project", project.mint.as_ref()], bump = project.bump)]
     pub project: Account<'info, Project>,
-    #[account(seeds = [b"vault", project.key().as_ref()], bump, token::mint = project.quote_mint, token::authority = project)]
+    #[account(mut, seeds = [b"vault", project.key().as_ref()], bump, token::mint = project.quote_mint, token::authority = project)]
     pub vault: Account<'info, TokenAccount>,
+    /// CHECK: SPLIT PDA signs only the fixed Raydium fee claim and SPL token transfer.
+    #[account(mut, seeds = [b"fee_wallet"], bump)]
+    pub fee_wallet: UncheckedAccount<'info>,
+    #[account(mut, constraint = fee_wallet_tokens.key() == get_associated_token_address(&fee_wallet.key(), &quote_mint.key()) @ SplitError::WrongFeeWalletAccount, token::mint = quote_mint, token::authority = fee_wallet)]
+    pub fee_wallet_tokens: Account<'info, TokenAccount>,
+    #[account(address = anchor_spl::token::spl_token::native_mint::ID)]
+    pub quote_mint: Account<'info, Mint>,
+    /// CHECK: The PDA is derived using Raydium's published authority seed.
+    #[account(address = Pubkey::find_program_address(&[b"vault_auth_seed"], &protocol.raydium_program).0)]
+    pub raydium_authority: UncheckedAccount<'info>,
+    /// CHECK: The pool PDA is derived from this project's immutable mint and WSOL.
+    #[account(mut, address = Pubkey::find_program_address(&[b"pool", project.mint.as_ref(), quote_mint.key().as_ref()], &protocol.raydium_program).0, owner = protocol.raydium_program)]
+    pub pool_state: UncheckedAccount<'info>,
+    /// CHECK: Raydium's quote vault PDA is checked and Raydium validates its token state.
+    #[account(mut, address = Pubkey::find_program_address(&[b"pool_vault", pool_state.key().as_ref(), quote_mint.key().as_ref()], &protocol.raydium_program).0)]
+    pub quote_vault: UncheckedAccount<'info>,
+    /// CHECK: Immutable platform config set by SPLIT's upgrade authority.
+    #[account(address = protocol.platform_config, owner = protocol.raydium_program)]
+    pub platform_config: UncheckedAccount<'info>,
+    /// CHECK: The immutable configured Raydium program must be executable.
+    #[account(address = protocol.raydium_program, constraint = raydium_program.executable)]
+    pub raydium_program: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+    pub associated_token_program: Program<'info, anchor_spl::associated_token::AssociatedToken>,
 }
 
 #[derive(Accounts)]
@@ -311,6 +408,8 @@ pub struct FeesClaimed {
 pub enum SplitError {
     #[msg("The recipient cannot be the default public key")]
     InvalidRecipient,
+    #[msg("The platform fee wallet token account is not its WSOL associated token account")]
+    WrongFeeWalletAccount,
     #[msg("The four shares must add to 10,000 basis points")]
     InvalidShares,
     #[msg("Arithmetic overflow")]
