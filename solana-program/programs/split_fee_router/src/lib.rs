@@ -18,18 +18,12 @@ pub mod split_fee_router {
 
     pub fn initialize_protocol(
         ctx: Context<InitializeProtocol>,
-        platform_authority: Pubkey,
         protocol_treasury: Pubkey,
     ) -> Result<()> {
-        require!(
-            platform_authority != Pubkey::default(),
-            SplitError::InvalidRecipient
-        );
         require!(
             protocol_treasury != Pubkey::default(),
             SplitError::InvalidRecipient
         );
-        ctx.accounts.protocol.authority = platform_authority;
         ctx.accounts.protocol.treasury = protocol_treasury;
         ctx.accounts.protocol.raydium_program = ctx.accounts.raydium_program.key();
         ctx.accounts.protocol.platform_config = ctx.accounts.platform_config.key();
@@ -209,14 +203,16 @@ pub struct RegisterProject<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub creator: Signer<'info>,
-    #[account(address = protocol.authority)]
-    pub platform_authority: Signer<'info>,
     #[account(seeds = [b"protocol"], bump)]
     pub protocol: Account<'info, Protocol>,
     // A fresh mint keypair signs registration before LaunchLab initializes the mint.
+    #[account(constraint = mint.lamports() == 0 && mint.data_is_empty() @ SplitError::MintAlreadyInitialized)]
     pub mint: Signer<'info>,
     #[account(address = anchor_spl::token::spl_token::native_mint::ID)]
     pub quote_mint: Account<'info, Mint>,
+    /// CHECK: The expected Raydium pool must not exist before registration.
+    #[account(address = Pubkey::find_program_address(&[b"pool", mint.key().as_ref(), quote_mint.key().as_ref()], &protocol.raydium_program).0, constraint = raydium_pool.lamports() == 0 && raydium_pool.data_is_empty() @ SplitError::PoolAlreadyInitialized)]
+    pub raydium_pool: UncheckedAccount<'info>,
     /// CHECK: Stored as an immutable recipient; checked against the claim signer later.
     pub project_treasury: UncheckedAccount<'info>,
     /// CHECK: Stored as an immutable recipient; checked against the claim signer later.
@@ -233,7 +229,6 @@ pub struct RegisterProject<'info> {
 #[account]
 #[derive(InitSpace)]
 pub struct Protocol {
-    pub authority: Pubkey,
     pub treasury: Pubkey,
     pub raydium_program: Pubkey,
     pub platform_config: Pubkey,
@@ -408,6 +403,10 @@ pub struct FeesClaimed {
 pub enum SplitError {
     #[msg("The recipient cannot be the default public key")]
     InvalidRecipient,
+    #[msg("The mint must be fresh and uninitialized before split registration")]
+    MintAlreadyInitialized,
+    #[msg("The Raydium pool already exists; fee shares must be registered first")]
+    PoolAlreadyInitialized,
     #[msg("The platform fee wallet token account is not its WSOL associated token account")]
     WrongFeeWalletAccount,
     #[msg("The four shares must add to 10,000 basis points")]
