@@ -16,6 +16,7 @@ export type SolanaProjectRecord = {
   liquidity_bps: number;
   treasury_bps: number;
   community_bps: number;
+  fee_model: "router" | "operator_managed";
 };
 
 export type SolanaPriceSample = {
@@ -43,7 +44,7 @@ const isProject = (row: SolanaProjectRecord) =>
 export async function getSolanaProjects() {
   const supabase = createServerSupabaseClient();
   const { data, error } = await supabase.from("solana_projects")
-    .select("mint_address,pool_address,creator_address,name,symbol,decimals,status,launched_at,creator_bps,liquidity_bps,treasury_bps,community_bps")
+    .select("mint_address,pool_address,creator_address,name,symbol,decimals,status,launched_at,creator_bps,liquidity_bps,treasury_bps,community_bps,fee_model")
     .eq("cluster", solanaCluster).eq("finalized", true).eq("is_hidden", false)
     .order("launched_at", { ascending: false }).limit(100);
   if (error) throw new Error(`Solana project index unavailable: ${error.code}`);
@@ -54,7 +55,7 @@ export async function getSolanaProject(mint: string) {
   if (!isSolanaAddress(mint)) return null;
   const supabase = createServerSupabaseClient();
   const { data, error } = await supabase.from("solana_projects")
-    .select("mint_address,pool_address,creator_address,name,symbol,decimals,status,launched_at,creator_bps,liquidity_bps,treasury_bps,community_bps")
+    .select("mint_address,pool_address,creator_address,name,symbol,decimals,status,launched_at,creator_bps,liquidity_bps,treasury_bps,community_bps,fee_model")
     .eq("cluster", solanaCluster).eq("mint_address", mint).eq("finalized", true).eq("is_hidden", false)
     .maybeSingle();
   if (error) throw new Error(`Solana project index unavailable: ${error.code}`);

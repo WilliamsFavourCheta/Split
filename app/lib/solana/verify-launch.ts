@@ -1,75 +1,63 @@
 import "server-only";
 import { createHash } from "node:crypto";
-import { LaunchpadPool, PlatformConfig } from "@raydium-io/raydium-sdk-v2";
+import { getPdaLaunchpadPoolId, LaunchpadPool, PlatformConfig } from "@raydium-io/raydium-sdk-v2";
+import { NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { solanaRpcUrl } from "./client";
-import { deriveSolanaProjectAccounts, getSolanaDeploymentConfig, SPLIT_PROTOCOL_TREASURY } from "./raydium-accounts";
+import { getRouterlessPlatformConfig, routerBackedSolanaMode } from "./raydium-accounts";
+import { verifySolanaLaunch as verifyRouterLaunch } from "./router-verify-launch";
 
-const PROJECT_DISCRIMINATOR = createHash("sha256").update("account:Project").digest().subarray(0, 8);
-const PROTOCOL_DISCRIMINATOR = createHash("sha256").update("account:Protocol").digest().subarray(0, 8);
-const PLATFORM_DISCRIMINATOR = createHash("sha256").update("account:PlatformConfig").digest().subarray(0, 8);
-const RAYDIUM_POOL_DISCRIMINATOR = Buffer.from([247, 237, 227, 245, 215, 195, 222, 70]);
-const PROJECT_MIN_BYTES = 249;
+const discriminator = (name: string) => createHash("sha256").update(`account:${name}`).digest().subarray(0, 8);
+const POOL = discriminator("PoolState");
+const PLATFORM = discriminator("PlatformConfig");
+const METADATA_PROGRAM = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
-export type VerifiedSolanaLaunch = {
-  mint: string;
-  pool: string;
-  creator: string;
-  projectTreasury: string;
-  community: string;
-  platformConfig: string;
-  decimals: number;
-  status: "curve" | "bonded" | "graduated";
-  shares: { creator: number; liquidity: number; projectTreasury: number; community: number };
-  observedFinalizedSlot: number;
-};
-
-/** Confirm accounts against finalized RPC state before creating any database project row. */
-export async function verifySolanaLaunch(mintAddress: string): Promise<VerifiedSolanaLaunch> {
-  const config = getSolanaDeploymentConfig();
-  if (!config) throw new Error("SPLIT Solana program and platform configuration are not set.");
-  const accounts = deriveSolanaProjectAccounts(mintAddress, config.router);
-  const connection = new Connection(solanaRpcUrl, { commitment: "finalized" });
-  const response = await connection.getMultipleAccountsInfoAndContext([accounts.project, accounts.pool, accounts.protocol, config.platform], { commitment: "finalized" });
-  const [projectInfo, poolInfo, protocolInfo, platformInfo] = response.value;
-  if (!projectInfo || !poolInfo || !protocolInfo || !platformInfo) throw new Error("The registered project, Raydium pool, protocol and platform configuration must all exist.");
-  if (!projectInfo.owner.equals(config.router) || !poolInfo.owner.equals(config.raydium) || !protocolInfo.owner.equals(config.router) || !platformInfo.owner.equals(config.raydium)) throw new Error("On-chain account owner mismatch.");
-  if (projectInfo.data.length < PROJECT_MIN_BYTES || !projectInfo.data.subarray(0, 8).equals(PROJECT_DISCRIMINATOR)) throw new Error("Invalid SPLIT project account.");
-  if (poolInfo.data.length < LaunchpadPool.span || !poolInfo.data.subarray(0, 8).equals(RAYDIUM_POOL_DISCRIMINATOR)) throw new Error("Invalid Raydium pool account.");
-  if (platformInfo.data.length < PlatformConfig.span || !platformInfo.data.subarray(0, 8).equals(PLATFORM_DISCRIMINATOR)) throw new Error("Invalid Raydium platform configuration.");
-  const platform = PlatformConfig.decode(platformInfo.data);
-  if (!platform.platformClaimFeeWallet.equals(accounts.feeWallet) || !platform.feeRate.eqn(10_000) || !platform.creatorFeeRate.isZero()) throw new Error("Raydium platform fee configuration does not match SPLIT's 1% WSOL routing.");
-
-  const readKey = (offset: number) => new PublicKey(projectInfo.data.subarray(offset, offset + 32));
-  const registeredMint = readKey(8);
-  const quoteMint = readKey(40);
-  const creator = readKey(72);
-  const projectTreasury = readKey(104);
-  const community = readKey(136);
-  const protocolTreasury = readKey(168);
-  const shares = {
-    creator: projectInfo.data.readUInt16LE(200),
-    liquidity: projectInfo.data.readUInt16LE(202),
-    projectTreasury: projectInfo.data.readUInt16LE(204),
-    community: projectInfo.data.readUInt16LE(206),
+function metadataFields(data: Buffer, mint: PublicKey) {
+  if (data.length < 77 || data[0] !== 4 || !new PublicKey(data.subarray(33, 65)).equals(mint)) throw new Error("Invalid token metadata.");
+  let offset = 65;
+  const read = (limit: number) => {
+    if (offset + 4 > data.length) throw new Error("Truncated token metadata.");
+    const len = data.readUInt32LE(offset);
+    offset += 4;
+    if (len > limit || offset + len > data.length) throw new Error("Invalid metadata field.");
+    const value = data.subarray(offset, offset + len).toString("utf8").replace(/\0+$/, "").trim();
+    offset += len;
+    return value;
   };
-  if (!registeredMint.equals(accounts.mint) || !quoteMint.equals(accounts.quoteMint)) throw new Error("SPLIT project mint or quote mismatch.");
-  if (Object.values(shares).reduce((sum, value) => sum + value, 0) !== 10_000) throw new Error("Invalid on-chain fee shares.");
-  const pool = LaunchpadPool.decode(poolInfo.data);
-  if (!pool.mintA.equals(accounts.mint) || !pool.mintB.equals(accounts.quoteMint)) throw new Error("Raydium pool mint mismatch.");
-  if (!pool.platformId.equals(config.platform) || !pool.creator.equals(creator)) throw new Error("Raydium pool platform or creator mismatch.");
-  if (pool.migrateType !== 1 || ![0, 1, 2].includes(pool.status)) throw new Error("Unsupported Raydium migration or pool status.");
-  if (protocolInfo.data.length < 104 || !protocolInfo.data.subarray(0, 8).equals(PROTOCOL_DISCRIMINATOR)) throw new Error("Invalid SPLIT protocol account.");
-  const configuredTreasury = new PublicKey(protocolInfo.data.subarray(8, 40));
-  const configuredRaydium = new PublicKey(protocolInfo.data.subarray(40, 72));
-  const configuredPlatform = new PublicKey(protocolInfo.data.subarray(72, 104));
-  if (!configuredTreasury.equals(SPLIT_PROTOCOL_TREASURY) || !configuredTreasury.equals(protocolTreasury) || !configuredRaydium.equals(config.raydium) || !configuredPlatform.equals(config.platform)) throw new Error("SPLIT protocol configuration mismatch.");
+  const name = read(32);
+  const symbol = read(10);
+  const uri = read(200);
+  if (!name || !/^[A-Z0-9]{2,10}$/.test(symbol) || !uri.startsWith("https://")) throw new Error("Incomplete token metadata.");
+  return { name, symbol, uri };
+}
 
-  return {
-    mint: accounts.mint.toBase58(), pool: accounts.pool.toBase58(), creator: creator.toBase58(),
-    projectTreasury: projectTreasury.toBase58(), community: community.toBase58(),
-    platformConfig: config.platform.toBase58(), decimals: pool.mintDecimalsA,
-    status: pool.status === 2 ? "graduated" : pool.status === 1 ? "bonded" : "curve", shares,
-    observedFinalizedSlot: response.context.slot,
-  };
+export async function verifySolanaLaunch(mintAddress: string) {
+  if (routerBackedSolanaMode) return verifyRouterLaunch(mintAddress);
+  const config = getRouterlessPlatformConfig();
+  if (!config) throw new Error("SPLIT Raydium platform and ordinary fee wallet are not configured.");
+  const mint = new PublicKey(mintAddress);
+  if (mint.equals(NATIVE_MINT)) throw new Error("Invalid token mint.");
+  const poolAddress = getPdaLaunchpadPoolId(config.raydium, mint, NATIVE_MINT).publicKey;
+  const [metadataAddress] = PublicKey.findProgramAddressSync(
+    [Buffer.from("metadata"), METADATA_PROGRAM.toBuffer(), mint.toBuffer()], METADATA_PROGRAM);
+  const connection = new Connection(solanaRpcUrl, "finalized");
+  const response = await connection.getMultipleAccountsInfoAndContext(
+    [poolAddress, config.platform, mint, metadataAddress], { commitment: "finalized" });
+  const [poolAccount, platformAccount, mintAccount, metadataAccount] = response.value;
+  if (!poolAccount || !platformAccount || !mintAccount || !metadataAccount) throw new Error("Finalized launch accounts are missing.");
+  if (!poolAccount.owner.equals(config.raydium) || poolAccount.data.length !== LaunchpadPool.span || !poolAccount.data.subarray(0, 8).equals(POOL)
+    || !platformAccount.owner.equals(config.raydium) || platformAccount.data.length !== PlatformConfig.span || !platformAccount.data.subarray(0, 8).equals(PLATFORM)
+    || !mintAccount.owner.equals(TOKEN_PROGRAM_ID) || !metadataAccount.owner.equals(METADATA_PROGRAM)) throw new Error("Launch account ownership or layout mismatch.");
+  const pool = LaunchpadPool.decode(poolAccount.data);
+  const platform = PlatformConfig.decode(platformAccount.data);
+  if (!pool.mintA.equals(mint) || !pool.mintB.equals(NATIVE_MINT) || !pool.platformId.equals(config.platform)
+    || pool.migrateType !== 1 || ![0, 1, 2].includes(pool.status) || pool.mintDecimalsA !== 6) throw new Error("Raydium launch binding mismatch.");
+  if (!platform.platformClaimFeeWallet.equals(config.feeWallet) || !platform.feeRate.eqn(10_000)
+    || !platform.creatorFeeRate.isZero()) throw new Error("SPLIT platform fee settings are incompatible.");
+  const metadata = metadataFields(metadataAccount.data, mint);
+  return { mint: mint.toBase58(), pool: poolAddress.toBase58(), creator: pool.creator.toBase58(),
+    platformConfig: config.platform.toBase58(), name: metadata.name, symbol: metadata.symbol,
+    metadataUri: metadata.uri, decimals: pool.mintDecimalsA,
+    status: (pool.status === 2 ? "graduated" : pool.status === 1 ? "bonded" : "curve") as "curve" | "bonded" | "graduated",
+    observedFinalizedSlot: response.context.slot };
 }

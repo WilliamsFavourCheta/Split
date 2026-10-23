@@ -45,8 +45,8 @@ export function validateSolanaLaunch(draft: SolanaLaunchDraft) {
   if (!Number.isFinite(target) || target < 24 || target > 10_000) errors.push("Graduation target must be between 24 and 10,000 SOL.");
   const shares = Object.values(draft.split);
   if (shares.some((value) => !Number.isInteger(value) || value < 0 || value > 100) || shares.reduce((sum, value) => sum + value, 0) !== 100) errors.push("The four destination shares must be whole percentages totaling 100%.");
-  if (draft.split.projectTreasury > 0 && !isSolanaAddress(draft.projectTreasuryAddress)) errors.push("Enter the project treasury's Solana wallet address.");
-  if (draft.split.community > 0 && !isSolanaAddress(draft.communityAddress)) errors.push("Enter the community's Solana wallet address.");
+  if (!isSolanaAddress(draft.projectTreasuryAddress)) errors.push("Enter the project treasury's Solana wallet address.");
+  if (!isSolanaAddress(draft.communityAddress)) errors.push("Enter the community's Solana wallet address.");
   return errors;
 }
 

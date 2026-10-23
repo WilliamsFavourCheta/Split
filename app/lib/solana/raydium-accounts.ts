@@ -11,8 +11,29 @@ export const RAYDIUM_LAUNCHPAD_PROGRAM = new PublicKey(
 );
 
 const seed = (value: string) => new TextEncoder().encode(value);
-export const SPLIT_PLATFORM_ADMIN = new PublicKey("9FAqrQLSbX8Sz6wu1u3QovunR3jFgWa2RfvQpJXFAUBu");
-export const SPLIT_PROTOCOL_TREASURY = new PublicKey("HSrCeMpFh5VnApPRPHJvDPTxUEdM7hQi5DhAMqWDcasn");
+export const SPLIT_PLATFORM_ADMIN = new PublicKey(solanaCluster === "devnet"
+  ? "5vFpsk41F3VH94mFji6e1XZp4bPwPQSGJdHRiVQuPp8i"
+  : "9FAqrQLSbX8Sz6wu1u3QovunR3jFgWa2RfvQpJXFAUBu");
+export const SPLIT_PROTOCOL_TREASURY = new PublicKey(solanaCluster === "devnet"
+  ? "9RPVW6dv1Lb6SUzBsYMRKwvmbKRpfneiaDPgtZaFcvWV"
+  : "HSrCeMpFh5VnApPRPHJvDPTxUEdM7hQi5DhAMqWDcasn");
+
+/** The deployed router remains available for controlled devnet work only. */
+export const routerBackedSolanaMode = solanaCluster === "devnet"
+  && process.env.NEXT_PUBLIC_SOLANA_ROUTER_BACKED === "true";
+
+export function getRouterlessPlatformConfig() {
+  const platformAddress = process.env.NEXT_PUBLIC_SPLIT_SOLANA_PLATFORM_CONFIG;
+  const walletAddress = process.env.NEXT_PUBLIC_SPLIT_SOLANA_FEE_WALLET;
+  if (!platformAddress || !walletAddress) return null;
+  try {
+    const platform = new PublicKey(platformAddress);
+    const feeWallet = new PublicKey(walletAddress);
+    const expected = getPdaPlatformId(RAYDIUM_LAUNCHPAD_PROGRAM, SPLIT_PLATFORM_ADMIN).publicKey;
+    if (!platform.equals(expected) || feeWallet.equals(PublicKey.default)) return null;
+    return { platform, feeWallet, admin: SPLIT_PLATFORM_ADMIN, raydium: RAYDIUM_LAUNCHPAD_PROGRAM };
+  } catch { return null; }
+}
 
 export function getSolanaDeploymentConfig() {
   const programId = process.env.NEXT_PUBLIC_SPLIT_SOLANA_PROGRAM_ID;

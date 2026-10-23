@@ -1,6 +1,4 @@
 import Link from "next/link";
-import { solanaCluster } from "../lib/solana/client";
-
 export default function SolanaHome() {
-  return <div className="section-shell solana-page"><span className="eyebrow">SPLIT on Solana · {solanaCluster === "mainnet-beta" ? "Mainnet" : "Devnet development"}</span><h1>Launch with a split that stays onchain.</h1><p>Solana launches will use a bonding curve, then graduate to a trading pool. Creator, liquidity, project treasury, and community destinations are recorded before trading begins.</p><Link href="/solana/launch" className="button button-primary">Prepare a launch</Link></div>;
+  return <div className="section-shell solana-page"><span className="eyebrow">SPLIT V2 · Solana launches coming soon</span><h1>SPLIT is coming to Solana.</h1><p>SPLIT V1 is live on Robinhood Chain. Solana launches are planned for V2, with Raydium LaunchLab and transparent fee receipts.</p><p>We&apos;re getting the Solana launch experience ready. Follow along for the V2 launch.</p><Link href="/solana/launch" className="button button-primary">Preview the Solana launch</Link></div>;
 }

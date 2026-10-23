@@ -1,5 +1,13 @@
 -- Solana data is separate from the existing EVM tables: base58 keys and
 -- signatures are case-sensitive and cannot use EVM's lowercase checks.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('solana-token-metadata', 'solana-token-metadata', true, 1048576,
+        array['application/json', 'image/png', 'image/jpeg', 'image/webp'])
+on conflict (id) do update set public = excluded.public,
+  file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
+create policy "public Solana metadata reads" on storage.objects for select
+  using (bucket_id = 'solana-token-metadata');
+
 create table public.solana_projects (
   id uuid primary key default gen_random_uuid(),
   cluster text not null check (cluster in ('devnet', 'mainnet-beta')),
@@ -20,6 +28,7 @@ create table public.solana_projects (
   liquidity_bps integer not null check (liquidity_bps between 0 and 10000),
   treasury_bps integer not null check (treasury_bps between 0 and 10000),
   community_bps integer not null check (community_bps between 0 and 10000),
+  fee_model text not null default 'router' check (fee_model in ('router', 'operator_managed')),
   status text not null check (status in ('pending', 'curve', 'bonded', 'graduated', 'failed')),
   registration_signature text,
   launch_signature text,
